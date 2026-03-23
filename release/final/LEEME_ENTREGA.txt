@@ -1,0 +1,18 @@
+﻿AUTOCONFIRM - ENTREGA FINAL
+
+Archivos recomendados:
+
+1. AutoConfirm-Setup.exe
+   - Este es el instalador final recomendado para entregar o instalar.
+
+2. AutoConfirm.exe
+   - Este es el ejecutable directo de la aplicaciÃ³n.
+   - Ãštil para pruebas rÃ¡pidas o ejecuciÃ³n manual.
+
+3. README.md
+   - Resumen general del proyecto.
+
+Notas:
+- Los ejecutables viejos fueron movidos a release/archive para no revolver la entrega final.
+- La carpeta release/final ya estÃ¡ limpia para distribuciÃ³n.
+

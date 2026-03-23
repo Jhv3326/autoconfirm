@@ -1,0 +1,51 @@
+﻿AUTOCONFIRM
+
+Â¿QuÃ© es AutoConfirm?
+AutoConfirm es una aplicaciÃ³n de escritorio para Windows diseÃ±ada para agilizar el envÃ­o de confirmaciones por WhatsApp a partir de una lista de contactos en Excel. EstÃ¡ pensada para personas que organizan eventos, negocios pequeÃ±os, planners, salones, coordinadores y cualquier persona que necesite contactar a muchos invitados o clientes sin hacerlo manualmente uno por uno.
+
+Â¿QuÃ© hace la app?
+- Carga un archivo de Excel con las columnas Nombre y Telefono.
+- Permite escribir un mensaje personalizado.
+- Usa el campo {nombre} para personalizar cada envÃ­o.
+- Usa WhatsApp Web para automatizar el proceso.
+- Muestra vista previa, progreso y registro de actividad.
+
+Â¿CÃ³mo funciona?
+1. El usuario abre AutoConfirm.
+2. Selecciona su archivo de Excel.
+3. Escribe el mensaje que quiere enviar.
+4. Revisa los contactos cargados.
+5. Inicia el envÃ­o.
+6. La app usa WhatsApp Web para mandar los mensajes.
+
+Â¿Para quiÃ©n sirve?
+- Organizadores de eventos
+- Bodas y quinceaÃ±os
+- Negocios con confirmaciones de citas
+- Emprendedores que hacen recordatorios o seguimiento
+- Personas que necesitan ahorrar tiempo al contactar listas grandes
+
+Ventajas principales
+- Ahorra tiempo
+- Evita copiar y pegar contacto por contacto
+- Mantiene un flujo mÃ¡s ordenado
+- Interfaz sencilla de usar
+- Ideal como herramienta prÃ¡ctica y rÃ¡pida
+
+Requisitos
+- Windows
+- WhatsApp Web disponible
+- Archivo Excel con columnas Nombre y Telefono
+- SesiÃ³n iniciada en WhatsApp Web
+
+Precio sugerido realista
+Precio de lanzamiento recomendado: 299 MXN
+
+Rango comercial sugerido:
+- BÃ¡sico / promociÃ³n inicial: 199 a 299 MXN
+- VersiÃ³n mÃ¡s pulida con soporte: 399 a 699 MXN
+- VersiÃ³n personalizada o con instalaciÃ³n/soporte: 799 MXN en adelante
+
+RecomendaciÃ³n comercial
+Para comenzar a vender rÃ¡pido, una buena estrategia es lanzar AutoConfirm en 299 MXN para validar interÃ©s, conseguir testimonios y despuÃ©s ofrecer una versiÃ³n mejorada o con soporte a un precio mayor.
+
