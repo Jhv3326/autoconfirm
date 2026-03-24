@@ -28,9 +28,9 @@ SOFT_GREEN = "#ECFDF3"
 SOFT_YELLOW = "#FEF3C7"
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DEFAULT_TEMPLATE = DATA_DIR / "invitados.xlsx"
-DEFAULT_URL_SAMPLE = "https://ejemplo.com/confirmar/abc123"
-DEFAULT_LANGUAGE = "en_US"
-DEFAULT_TEMPLATE_NAME = "hello_world"
+DEFAULT_URL_SAMPLE = "https://autoconfirm.onrender.com/confirmar?id=abc123"
+DEFAULT_LANGUAGE = "es_MX"
+DEFAULT_TEMPLATE_NAME = "event_invitation_confirm"
 API_VERSION = "v22.0"
 DB_PATH = DATA_DIR / "invitados.db"
 
@@ -103,7 +103,7 @@ class App:
         self.access_token_var = tk.StringVar()
         self.template_name_var = tk.StringVar(value=DEFAULT_TEMPLATE_NAME)
         self.language_code_var = tk.StringVar(value=DEFAULT_LANGUAGE)
-        self.link_var = tk.StringVar(value="http://127.0.0.1:5000/confirmar")
+        self.link_var = tk.StringVar(value="https://autoconfirm.onrender.com/confirmar")
 
         self._configure_styles()
         self.create_widgets()
@@ -188,7 +188,7 @@ class App:
 
         tk.Label(
             api_card,
-            text="Usa hello_world / en_US para pruebas rápidas. Con tu plantilla real, la app mandará un link único por invitado.",
+            text="Configurado por defecto con tu plantilla aprobada event_invitation_confirm / es_MX. La app mandará un link único por invitado.",
             font=("Segoe UI", 9),
             bg=CARD_BG,
             fg=MUTED,
@@ -292,7 +292,7 @@ class App:
         self.preview_text.pack(fill="both", expand=True, padx=16, pady=(0, 16))
         self.preview_text.insert(
             "1.0",
-            "Modo actual:\n\n1) Prueba rápida\n- Plantilla: hello_world\n- Idioma: en_US\n- Se envía sin variables\n\n2) Plantilla oficial\n- Pon el nombre real de tu plantilla\n- Pon el idioma real aprobado por Meta\n- La app mandará automáticamente:\n  {{1}} = nombre del invitado\n  {{2}} = link único de confirmación\n",
+            "Modo actual:\n\n1) Plantilla oficial activa\n- Plantilla: event_invitation_confirm\n- Idioma: es_MX\n- La app mandará automáticamente:\n  {{1}} = nombre del invitado\n  {{2}} = link único de confirmación\n\n2) Modo de prueba alterno\n- Si algún día quieres volver a probar hello_world\n- cambia manualmente la plantilla a hello_world\n- y el idioma a en_US\n",
         )
 
         right_card = tk.Frame(middle_frame, bg=CARD_BG, bd=1, relief="solid")
