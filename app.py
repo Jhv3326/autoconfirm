@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import os
 
 import csv
 import io
@@ -11,6 +12,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "invitados.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 Base = declarative_base()
 
@@ -29,8 +31,13 @@ class Invitado(Base):
     notas = Column(String, default="")
 
 
-DATA_DIR.mkdir(exist_ok=True)
-engine = create_engine(f"sqlite:///{DB_PATH.as_posix()}")
+if DATABASE_URL:
+    normalized_database_url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    engine = create_engine(normalized_database_url)
+else:
+    DATA_DIR.mkdir(exist_ok=True)
+    engine = create_engine(f"sqlite:///{DB_PATH.as_posix()}")
+
 Session = sessionmaker(bind=engine)
 Base.metadata.create_all(engine)
 
