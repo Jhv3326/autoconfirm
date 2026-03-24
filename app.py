@@ -6,7 +6,7 @@ import csv
 import io
 
 from flask import Flask, Response, redirect, render_template_string, request, url_for
-from sqlalchemy import Column, DateTime, Integer, String, create_engine, text
+from sqlalchemy import Column, DateTime, Integer, String, create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -43,16 +43,16 @@ Base.metadata.create_all(engine)
 
 
 def ensure_schema():
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("invitados")}
+
     with engine.begin() as connection:
-        columns = {
-            row[1] for row in connection.execute(text("PRAGMA table_info(invitados)"))
-        }
         migrations = []
 
         if "mensaje_enviado" not in columns:
             migrations.append("ALTER TABLE invitados ADD COLUMN mensaje_enviado VARCHAR DEFAULT 'No'")
         if "fecha_respuesta" not in columns:
-            migrations.append("ALTER TABLE invitados ADD COLUMN fecha_respuesta DATETIME")
+            migrations.append("ALTER TABLE invitados ADD COLUMN fecha_respuesta TIMESTAMP")
         if "notas" not in columns:
             migrations.append("ALTER TABLE invitados ADD COLUMN notas VARCHAR DEFAULT ''")
 

@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import pandas as pd
 import requests
-from sqlalchemy import Column, DateTime, Integer, String, create_engine, text
+from sqlalchemy import Column, DateTime, Integer, String, create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 
@@ -66,17 +66,18 @@ Base.metadata.create_all(engine)
 
 
 def ensure_schema():
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("invitados")}
+    migrations = []
+
+    if "mensaje_enviado" not in columns:
+        migrations.append("ALTER TABLE invitados ADD COLUMN mensaje_enviado VARCHAR DEFAULT 'No'")
+    if "fecha_respuesta" not in columns:
+        migrations.append("ALTER TABLE invitados ADD COLUMN fecha_respuesta TIMESTAMP")
+    if "notas" not in columns:
+        migrations.append("ALTER TABLE invitados ADD COLUMN notas VARCHAR DEFAULT ''")
+
     with engine.begin() as connection:
-        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(invitados)"))}
-        migrations = []
-
-        if "mensaje_enviado" not in columns:
-            migrations.append("ALTER TABLE invitados ADD COLUMN mensaje_enviado VARCHAR DEFAULT 'No'")
-        if "fecha_respuesta" not in columns:
-            migrations.append("ALTER TABLE invitados ADD COLUMN fecha_respuesta DATETIME")
-        if "notas" not in columns:
-            migrations.append("ALTER TABLE invitados ADD COLUMN notas VARCHAR DEFAULT ''")
-
         for statement in migrations:
             connection.execute(text(statement))
 
