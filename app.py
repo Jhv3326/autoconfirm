@@ -500,5 +500,29 @@ def exportar_csv():
     )
 
 
+@app.route("/privacy")
+def privacy():
+    content = """
+    <div class="hero">
+        <div class="pill">AutoConfirm</div>
+        <h1>Política de privacidad</h1>
+        <p class="muted">Última actualización: marzo 2026.</p>
+    </div>
+
+    <div class="card">
+        <p>AutoConfirm recopila únicamente la información necesaria para gestionar invitaciones y confirmaciones de asistencia a eventos, como nombre, número de teléfono y respuesta del invitado.</p>
+
+        <p>Esta información se utiliza exclusivamente para el envío de invitaciones, recepción de confirmaciones y visualización de resultados por parte del organizador del evento.</p>
+
+        <p>AutoConfirm no vende ni comparte datos personales con terceros ajenos a la operación del servicio, salvo cuando sea necesario para el funcionamiento técnico de plataformas utilizadas, como WhatsApp Business Platform y servicios de alojamiento.</p>
+
+        <p>Los datos se conservan solo durante el tiempo necesario para operar el evento y dar seguimiento a las confirmaciones.</p>
+
+        <p>Si deseas solicitar la eliminación o modificación de tus datos, puedes contactar al responsable del evento o al administrador del sistema.</p>
+    </div>
+    """
+    return render_page("Política de privacidad", content)
+
+
 if __name__ == "__main__":
     app.run(port=5000, debug=True)
