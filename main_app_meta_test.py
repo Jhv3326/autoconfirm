@@ -1,3 +1,4 @@
+import os
 import re
 import threading
 import time
@@ -33,6 +34,7 @@ DEFAULT_LANGUAGE = "es_MX"
 DEFAULT_TEMPLATE_NAME = "event_invitation_confirm"
 API_VERSION = "v22.0"
 DB_PATH = DATA_DIR / "invitados.db"
+DATABASE_URL = os.getenv("AUTOCONFIRM_DATABASE_URL", "").strip() or os.getenv("DATABASE_URL", "").strip()
 
 Base = declarative_base()
 
@@ -51,7 +53,14 @@ class Invitado(Base):
     notas = Column(String, default="")
 
 
-engine = create_engine(f"sqlite:///{DB_PATH.as_posix()}")
+if DATABASE_URL:
+    normalized_database_url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    engine = create_engine(normalized_database_url)
+    DATABASE_MODE = "Postgres compartido"
+else:
+    engine = create_engine(f"sqlite:///{DB_PATH.as_posix()}")
+    DATABASE_MODE = "SQLite local"
+
 Session = sessionmaker(bind=engine)
 Base.metadata.create_all(engine)
 
@@ -188,7 +197,7 @@ class App:
 
         tk.Label(
             api_card,
-            text="Configurado por defecto con tu plantilla aprobada event_invitation_confirm / es_MX. La app mandará un link único por invitado.",
+            text=f"Configurado por defecto con tu plantilla aprobada event_invitation_confirm / es_MX. Base actual: {DATABASE_MODE}. La app mandará un link único por invitado.",
             font=("Segoe UI", 9),
             bg=CARD_BG,
             fg=MUTED,
