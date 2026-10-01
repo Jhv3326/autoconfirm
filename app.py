@@ -1,89 +1,42 @@
-from datetime import datetime
-from functools import wraps
-from pathlib import Path
-import os
-import secrets
-
 import csv
 import io
+import os
+import threading
+import uuid
+from datetime import datetime
+from functools import wraps
 
+import pandas as pd
 from dotenv import load_dotenv
-from flask import Flask, Response, redirect, render_template_string, request, url_for
+from flask import (
+    Flask,
+    Response,
+    g,
+    redirect,
+    render_template_string,
+    request,
+    session,
+    url_for,
+)
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from markupsafe import escape
-from sqlalchemy import Column, DateTime, Integer, String, create_engine, inspect, text
-from sqlalchemy.orm import declarative_base, sessionmaker
+
+from models import Evento, EventoColaborador, Invitado, Session, Usuario, init_db
+from twilio_sender import enviar_invitaciones_evento
 
 load_dotenv()
 
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-DB_PATH = DATA_DIR / "invitados.db"
-DATABASE_URL = (
-    os.getenv("AUTOCONFIRM_DATABASE_URL", "").strip()
-    or os.getenv("DATABASE_URL", "").strip()
-)
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin").strip()
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
-
-Base = declarative_base()
-
-
-class Invitado(Base):
-    __tablename__ = "invitados"
-
-    id = Column(Integer, primary_key=True)
-    nombre = Column(String)
-    telefono = Column(String)
-    uuid = Column(String, unique=True)
-    confirmacion = Column(String, default="Pendiente")
-    acompanantes = Column(Integer, default=0)
-    mensaje_enviado = Column(String, default="No")
-    fecha_respuesta = Column(DateTime, nullable=True)
-    notas = Column(String, default="")
-
-
-if DATABASE_URL:
-    normalized_database_url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-    # Fuerza el driver psycopg2 explícitamente: versiones nuevas de SQLAlchemy
-    # intentan usar psycopg (v3) por default para "postgresql://" a secas, y
-    # esta app instala psycopg2-binary, no psycopg v3.
-    if normalized_database_url.startswith("postgresql://"):
-        normalized_database_url = normalized_database_url.replace(
-            "postgresql://", "postgresql+psycopg2://", 1
-        )
-    engine = create_engine(normalized_database_url)
-else:
-    DATA_DIR.mkdir(exist_ok=True)
-    engine = create_engine(f"sqlite:///{DB_PATH.as_posix()}")
-
-Session = sessionmaker(bind=engine)
-Base.metadata.create_all(engine)
-
-
-def ensure_schema():
-    inspector = inspect(engine)
-    columns = {column["name"] for column in inspector.get_columns("invitados")}
-
-    with engine.begin() as connection:
-        migrations = []
-
-        if "mensaje_enviado" not in columns:
-            migrations.append("ALTER TABLE invitados ADD COLUMN mensaje_enviado VARCHAR DEFAULT 'No'")
-        if "fecha_respuesta" not in columns:
-            migrations.append("ALTER TABLE invitados ADD COLUMN fecha_respuesta TIMESTAMP")
-        if "notas" not in columns:
-            migrations.append("ALTER TABLE invitados ADD COLUMN notas VARCHAR DEFAULT ''")
-
-        for statement in migrations:
-            connection.execute(text(statement))
-
-
-ensure_schema()
+init_db()
 
 app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", "").strip()
+if not app.secret_key:
+    raise RuntimeError("Falta SECRET_KEY en las variables de entorno (ver .env.example).")
+
 limiter = Limiter(key_func=get_remote_address, app=app, storage_uri="memory://")
+
+REQUIRED_COLUMNS = {"Nombre", "Telefono"}
 
 BASE_HTML = """
 <!DOCTYPE html>
@@ -116,10 +69,19 @@ BASE_HTML = """
             color: var(--text);
         }
         .wrap {
-            max-width: 820px;
+            max-width: 920px;
             margin: 0 auto;
             padding: 24px 16px 40px;
         }
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 18px;
+            font-size: 14px;
+        }
+        .topbar a { color: #c4b5fd; text-decoration: none; }
+        .topbar a:hover { text-decoration: underline; }
         .card {
             background: var(--card);
             border: 1px solid var(--border);
@@ -244,6 +206,26 @@ BASE_HTML = """
             color: var(--muted);
             word-break: break-all;
         }
+        .event-card {
+            display: block;
+            background: var(--input);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 16px;
+            margin-bottom: 12px;
+            color: var(--text);
+            text-decoration: none;
+        }
+        .event-card:hover { border-color: var(--accent); }
+        .flash {
+            background: var(--soft);
+            border: 1px solid var(--border);
+            color: #c4b5fd;
+            padding: 12px 16px;
+            border-radius: 12px;
+            margin-bottom: 16px;
+        }
+        .error-text { color: #fda4af; margin-bottom: 16px; }
     </style>
 </head>
 <body>
@@ -259,6 +241,21 @@ def render_page(title: str, content: str):
     return render_template_string(BASE_HTML, title=title, content=content)
 
 
+def topbar() -> str:
+    if not g.usuario:
+        return ""
+    return f"""
+    <div class="topbar">
+        <a href="{url_for('eventos_lista')}">AutoConfirm</a>
+        <div>
+            <span class="muted">{escape(g.usuario.email)} · {escape(g.usuario.organizacion.nombre)}</span>
+            &nbsp;·&nbsp;
+            <a href="{url_for('logout')}">Cerrar sesión</a>
+        </div>
+    </div>
+    """
+
+
 def status_badge(status: str) -> str:
     normalized = (status or "Pendiente").strip().lower()
     if normalized == "confirmado":
@@ -268,35 +265,467 @@ def status_badge(status: str) -> str:
     return '<span class="tag tag-pending">Pendiente</span>'
 
 
-def require_admin_auth(view):
+# --- Sesión / autenticación -------------------------------------------------
+
+
+@app.before_request
+def cargar_usuario():
+    g.db = Session()
+    g.usuario = None
+    usuario_id = session.get("usuario_id")
+    if usuario_id:
+        g.usuario = g.db.get(Usuario, usuario_id)
+
+
+@app.teardown_appcontext
+def cerrar_db(exception=None):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
-        if not ADMIN_PASSWORD:
-            return Response(
-                "El dashboard está deshabilitado: falta configurar ADMIN_PASSWORD en el servidor.",
-                status=503,
-            )
-
-        auth = request.authorization
-        valid = bool(auth) and secrets.compare_digest(
-            auth.username or "", ADMIN_USERNAME
-        ) and secrets.compare_digest(auth.password or "", ADMIN_PASSWORD)
-
-        if not valid:
-            return Response(
-                "Acceso restringido.",
-                status=401,
-                headers={"WWW-Authenticate": 'Basic realm="AutoConfirm Dashboard"'},
-            )
-
+        if not g.usuario:
+            return redirect(url_for("login", next=request.path))
         return view(*args, **kwargs)
 
     return wrapped
 
 
+@app.route("/login", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
+def login():
+    if g.usuario:
+        return redirect(url_for("eventos_lista"))
+
+    error = ""
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        usuario = g.db.query(Usuario).filter_by(email=email, activo=True).first()
+        if usuario and usuario.check_password(password):
+            session.clear()
+            session["usuario_id"] = usuario.id
+            destino = request.args.get("next") or url_for("eventos_lista")
+            return redirect(destino)
+        error = "Correo o contraseña incorrectos."
+
+    error_html = f'<p class="error-text">{escape(error)}</p>' if error else ""
+    content = f"""
+    <div class="hero">
+        <div class="pill">AutoConfirm</div>
+        <h1>Iniciar sesión</h1>
+    </div>
+    <div class="card">
+        {error_html}
+        <form method="post">
+            <div class="field">
+                <label for="email">Correo</label>
+                <input type="email" name="email" id="email" required autofocus>
+            </div>
+            <div class="field">
+                <label for="password">Contraseña</label>
+                <input type="password" name="password" id="password" required>
+            </div>
+            <div class="actions">
+                <button class="btn btn-primary" type="submit">Entrar</button>
+            </div>
+        </form>
+    </div>
+    """
+    return render_page("Iniciar sesión", content)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
 @app.route("/")
 def home():
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("eventos_lista") if g.usuario else url_for("login"))
+
+
+# --- Eventos -----------------------------------------------------------------
+
+
+def eventos_visibles(usuario: Usuario):
+    todos = g.db.query(Evento).filter_by(organizacion_id=usuario.organizacion_id).all()
+    return [e for e in todos if e.puede_ver(usuario)]
+
+
+@app.route("/eventos", methods=["GET", "POST"])
+@login_required
+def eventos_lista():
+    if request.method == "POST":
+        nombre = request.form.get("nombre", "").strip()
+        fecha_raw = request.form.get("fecha_evento", "").strip()
+        if nombre:
+            fecha_evento = None
+            if fecha_raw:
+                try:
+                    fecha_evento = datetime.strptime(fecha_raw, "%Y-%m-%d")
+                except ValueError:
+                    fecha_evento = None
+            nuevo = Evento(
+                organizacion_id=g.usuario.organizacion_id,
+                creado_por_id=g.usuario.id,
+                nombre=nombre,
+                fecha_evento=fecha_evento,
+            )
+            g.db.add(nuevo)
+            g.db.commit()
+            return redirect(url_for("evento_detalle", evento_id=nuevo.id))
+
+    eventos = sorted(eventos_visibles(g.usuario), key=lambda e: e.creado_en, reverse=True)
+
+    rows = []
+    for evento in eventos:
+        total = len(evento.invitados)
+        fecha = evento.fecha_evento.strftime("%Y-%m-%d") if evento.fecha_evento else "Sin fecha"
+        rows.append(
+            f"""
+            <a class="event-card" href="{url_for('evento_detalle', evento_id=evento.id)}">
+                <strong>{escape(evento.nombre)}</strong>
+                <div class="muted">{escape(fecha)} · {total} invitado(s)</div>
+            </a>
+            """
+        )
+    if not rows:
+        rows.append('<p class="muted">Todavía no tienes eventos. Crea el primero abajo.</p>')
+
+    content = f"""
+    {topbar()}
+    <div class="hero">
+        <div class="pill">Mis eventos</div>
+        <h1>Eventos</h1>
+    </div>
+
+    <div class="card" style="margin-bottom:18px;">
+        {''.join(rows)}
+    </div>
+
+    <div class="card">
+        <h2>Crear nuevo evento</h2>
+        <form method="post">
+            <div class="grid">
+                <div class="field">
+                    <label for="nombre">Nombre del evento</label>
+                    <input type="text" name="nombre" id="nombre" placeholder="Ej. Boda Ana y Luis" required>
+                </div>
+                <div class="field">
+                    <label for="fecha_evento">Fecha (opcional)</label>
+                    <input type="date" name="fecha_evento" id="fecha_evento">
+                </div>
+            </div>
+            <div class="actions">
+                <button class="btn btn-primary" type="submit">Crear evento</button>
+            </div>
+        </form>
+    </div>
+    """
+    return render_page("Eventos", content)
+
+
+def cargar_evento_o_404(evento_id: int):
+    evento = g.db.get(Evento, evento_id)
+    if not evento or not evento.puede_ver(g.usuario):
+        return None
+    return evento
+
+
+@app.route("/eventos/<int:evento_id>")
+@login_required
+def evento_detalle(evento_id):
+    evento = cargar_evento_o_404(evento_id)
+    if not evento:
+        return render_page("No encontrado", f'{topbar()}<div class="card"><h1>Evento no encontrado</h1></div>'), 404
+
+    invitados = sorted(evento.invitados, key=lambda i: i.id)
+    total = len(invitados)
+    confirmados = sum(1 for i in invitados if i.confirmacion == "Confirmado")
+    rechazados = sum(1 for i in invitados if i.confirmacion == "Rechazado")
+    pendientes = total - confirmados - rechazados
+    acompanantes = sum(int(i.acompanantes or 0) for i in invitados if i.confirmacion == "Confirmado")
+    public_base = request.host_url.rstrip("/")
+
+    rows = []
+    for item in invitados:
+        fecha = item.fecha_respuesta.strftime("%Y-%m-%d %H:%M") if item.fecha_respuesta else "—"
+        enlace_relativo = f"/confirmar?id={item.uuid}"
+        enlace_completo = f"{public_base}{enlace_relativo}"
+        enviado = "Sí" if item.mensaje_enviado == "Si" else "No"
+        rows.append(
+            f"""
+            <tr>
+                <td>{escape(item.nombre or '')}</td>
+                <td>{escape(item.telefono or '') or '—'}</td>
+                <td>{status_badge(item.confirmacion)}</td>
+                <td>{int(item.acompanantes or 0)}</td>
+                <td>{enviado}</td>
+                <td>{fecha}</td>
+                <td>{escape(item.notas or '') or '—'}</td>
+                <td>
+                    <a href="{enlace_relativo}" target="_blank">Abrir enlace</a>
+                    <div class="link-box">{enlace_completo}</div>
+                </td>
+            </tr>
+            """
+        )
+    if not rows:
+        rows.append('<tr><td colspan="8">Todavía no hay invitados cargados. Sube un Excel abajo.</td></tr>')
+
+    puede_administrar = evento.creado_por_id == g.usuario.id or g.usuario.es_admin
+    colaboradores_html = ""
+    if puede_administrar:
+        colaboradores_rows = []
+        for colaborador in evento.colaboradores:
+            colaboradores_rows.append(
+                f"""
+                <li>{escape(colaborador.usuario.email)}
+                    <form method="post" action="{url_for('evento_quitar_colaborador', evento_id=evento.id, usuario_id=colaborador.usuario_id)}" style="display:inline;">
+                        <button class="btn btn-secondary" type="submit" style="padding:2px 8px;font-size:12px;">Quitar</button>
+                    </form>
+                </li>
+                """
+            )
+        colaboradores_html = f"""
+        <div class="card" style="margin-top:18px;">
+            <h2>Compartir este evento</h2>
+            <p class="muted">Dale acceso a otro planner de tu misma empresa para que vea y administre este evento.</p>
+            <ul>{''.join(colaboradores_rows) or '<li class="muted">Nadie más tiene acceso todavía.</li>'}</ul>
+            <form method="post" action="{url_for('evento_compartir', evento_id=evento.id)}">
+                <div class="grid">
+                    <div class="field">
+                        <label for="email_colaborador">Correo del planner</label>
+                        <input type="email" name="email" id="email_colaborador" required>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button class="btn btn-secondary" type="submit">Compartir</button>
+                </div>
+            </form>
+        </div>
+        """
+
+    content = f"""
+    {topbar()}
+    <div class="hero">
+        <div class="pill">{escape(evento.nombre)}</div>
+        <h1>Invitados</h1>
+    </div>
+
+    <div class="stats">
+        <div class="stat"><span>Total invitados</span><strong>{total}</strong></div>
+        <div class="stat"><span>Confirmados</span><strong>{confirmados}</strong></div>
+        <div class="stat"><span>No asistirán</span><strong>{rechazados}</strong></div>
+        <div class="stat"><span>Pendientes</span><strong>{pendientes}</strong></div>
+        <div class="stat"><span>Acompañantes</span><strong>{acompanantes}</strong></div>
+    </div>
+
+    <div class="card">
+        <div class="toolbar">
+            <h2 style="margin:0;">Lista de invitados</h2>
+            <div class="actions">
+                <a class="btn btn-secondary" href="{url_for('evento_exportar_csv', evento_id=evento.id)}">Exportar CSV</a>
+            </div>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Nombre</th><th>Teléfono</th><th>Estado</th><th>Acomp.</th>
+                    <th>Enviado</th><th>Respondió</th><th>Notas</th><th>Enlace</th>
+                </tr>
+            </thead>
+            <tbody>{''.join(rows)}</tbody>
+        </table>
+    </div>
+
+    <div class="card" style="margin-top:18px;">
+        <h2>Cargar invitados (Excel)</h2>
+        <p class="muted">El archivo debe tener las columnas "Nombre" y "Telefono".</p>
+        <form method="post" action="{url_for('evento_cargar', evento_id=evento.id)}" enctype="multipart/form-data">
+            <div class="grid">
+                <div class="field">
+                    <label for="archivo">Archivo .xlsx</label>
+                    <input type="file" name="archivo" id="archivo" accept=".xlsx,.xls" required>
+                </div>
+                <div class="field">
+                    <label for="prefijo_pais">Prefijo país</label>
+                    <input type="text" name="prefijo_pais" id="prefijo_pais" value="52">
+                </div>
+            </div>
+            <div class="actions">
+                <button class="btn btn-secondary" type="submit">Cargar</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="card" style="margin-top:18px;">
+        <h2>Enviar invitaciones por WhatsApp</h2>
+        <p class="muted">Manda la invitación a los invitados que todavía no la han recibido.</p>
+        <form method="post" action="{url_for('evento_enviar', evento_id=evento.id)}">
+            <div class="actions">
+                <button class="btn btn-primary" type="submit">Enviar invitaciones pendientes</button>
+            </div>
+        </form>
+    </div>
+
+    {colaboradores_html}
+    """
+    return render_page(f"Evento: {evento.nombre}", content)
+
+
+@app.route("/eventos/<int:evento_id>/cargar", methods=["POST"])
+@login_required
+def evento_cargar(evento_id):
+    evento = cargar_evento_o_404(evento_id)
+    if not evento:
+        return render_page("No encontrado", f'{topbar()}<div class="card"><h1>Evento no encontrado</h1></div>'), 404
+
+    archivo = request.files.get("archivo")
+    prefijo_pais = (request.form.get("prefijo_pais", "52") or "52").strip()
+    if not archivo or archivo.filename == "":
+        return redirect(url_for("evento_detalle", evento_id=evento.id))
+
+    try:
+        df = pd.read_excel(archivo, dtype={"Telefono": str})
+    except Exception:
+        return render_page(
+            "Error al leer el Excel",
+            f'{topbar()}<div class="card"><h1>No se pudo leer el archivo</h1><p class="muted">Verifica que sea un .xlsx válido.</p></div>',
+        ), 400
+
+    faltantes = REQUIRED_COLUMNS - set(df.columns)
+    if faltantes:
+        return render_page(
+            "Formato inválido",
+            f'{topbar()}<div class="card"><h1>Faltan columnas</h1><p class="muted">Faltan: {escape(", ".join(sorted(faltantes)))}</p></div>',
+        ), 400
+
+    df["Nombre"] = df["Nombre"].fillna("").astype(str).str.strip()
+    df["Telefono"] = df["Telefono"].fillna("").astype(str).str.strip()
+
+    existentes = {(i.nombre, i.telefono) for i in evento.invitados}
+    for _, row in df.iterrows():
+        nombre, telefono = row["Nombre"], row["Telefono"]
+        if not nombre or (nombre, telefono) in existentes:
+            continue
+        nuevo = Invitado(
+            evento_id=evento.id,
+            nombre=nombre,
+            telefono=telefono,
+            uuid=str(uuid.uuid4()),
+            confirmacion="Pendiente",
+            acompanantes=0,
+            mensaje_enviado="No",
+            notas="",
+        )
+        g.db.add(nuevo)
+        existentes.add((nombre, telefono))
+
+    g.db.commit()
+    return redirect(url_for("evento_detalle", evento_id=evento.id))
+
+
+@app.route("/eventos/<int:evento_id>/enviar", methods=["POST"])
+@login_required
+def evento_enviar(evento_id):
+    evento = cargar_evento_o_404(evento_id)
+    if not evento:
+        return render_page("No encontrado", f'{topbar()}<div class="card"><h1>Evento no encontrado</h1></div>'), 404
+
+    organizacion = evento.organizacion
+    if not (organizacion.twilio_account_sid and organizacion.twilio_auth_token and organizacion.twilio_whatsapp_from):
+        return render_page(
+            "Falta configuración",
+            f'{topbar()}<div class="card"><h1>Falta configurar Twilio</h1>'
+            f'<p class="muted">Tu organización todavía no tiene credenciales de Twilio registradas. Contacta al administrador.</p></div>',
+        ), 400
+
+    confirmation_base_url = f"{request.host_url.rstrip('/')}/confirmar"
+    hilo = threading.Thread(
+        target=enviar_invitaciones_evento,
+        args=(evento.id, confirmation_base_url),
+        daemon=True,
+    )
+    hilo.start()
+
+    content = f"""
+    {topbar()}
+    <div class="card hero">
+        <div class="pill">Envío iniciado</div>
+        <h1>Mandando invitaciones…</h1>
+        <p class="muted">Esto corre en segundo plano. Actualiza esta página en unos segundos para ver el progreso.</p>
+        <div class="actions" style="justify-content:center;">
+            <a class="btn btn-primary" href="{url_for('evento_detalle', evento_id=evento.id)}">Volver al evento</a>
+        </div>
+    </div>
+    """
+    return render_page("Enviando invitaciones", content)
+
+
+@app.route("/eventos/<int:evento_id>/compartir", methods=["POST"])
+@login_required
+def evento_compartir(evento_id):
+    evento = cargar_evento_o_404(evento_id)
+    if not evento or not (evento.creado_por_id == g.usuario.id or g.usuario.es_admin):
+        return render_page("No autorizado", f'{topbar()}<div class="card"><h1>No autorizado</h1></div>'), 403
+
+    email = request.form.get("email", "").strip().lower()
+    colaborador = g.db.query(Usuario).filter_by(email=email, organizacion_id=g.usuario.organizacion_id).first()
+    if colaborador and colaborador.id != evento.creado_por_id:
+        ya_existe = any(c.usuario_id == colaborador.id for c in evento.colaboradores)
+        if not ya_existe:
+            g.db.add(EventoColaborador(evento_id=evento.id, usuario_id=colaborador.id))
+            g.db.commit()
+
+    return redirect(url_for("evento_detalle", evento_id=evento.id))
+
+
+@app.route("/eventos/<int:evento_id>/colaboradores/<int:usuario_id>/quitar", methods=["POST"])
+@login_required
+def evento_quitar_colaborador(evento_id, usuario_id):
+    evento = cargar_evento_o_404(evento_id)
+    if not evento or not (evento.creado_por_id == g.usuario.id or g.usuario.es_admin):
+        return render_page("No autorizado", f'{topbar()}<div class="card"><h1>No autorizado</h1></div>'), 403
+
+    g.db.query(EventoColaborador).filter_by(evento_id=evento.id, usuario_id=usuario_id).delete()
+    g.db.commit()
+    return redirect(url_for("evento_detalle", evento_id=evento.id))
+
+
+@app.route("/eventos/<int:evento_id>/exportar_csv")
+@login_required
+def evento_exportar_csv(evento_id):
+    evento = cargar_evento_o_404(evento_id)
+    if not evento:
+        return render_page("No encontrado", f'{topbar()}<div class="card"><h1>Evento no encontrado</h1></div>'), 404
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["Nombre", "Telefono", "Estado", "Acompanantes", "FechaRespuesta", "Notas", "UUID"])
+    for item in evento.invitados:
+        fecha = item.fecha_respuesta.strftime("%Y-%m-%d %H:%M:%S") if item.fecha_respuesta else ""
+        writer.writerow([
+            item.nombre or "", item.telefono or "", item.confirmacion or "Pendiente",
+            item.acompanantes or 0, fecha, item.notas or "", item.uuid or "",
+        ])
+
+    csv_data = buffer.getvalue()
+    buffer.close()
+    nombre_archivo = f"invitados_{evento.id}.csv"
+    return Response(
+        csv_data,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={nombre_archivo}"},
+    )
+
+
+# --- Páginas públicas (sin login) --------------------------------------------
 
 
 @app.route("/confirmar")
@@ -314,9 +743,7 @@ def confirmar():
             """,
         ), 400
 
-    session = Session()
-    invitado = session.query(Invitado).filter_by(uuid=invitado_uuid).first()
-    session.close()
+    invitado = g.db.query(Invitado).filter_by(uuid=invitado_uuid).first()
 
     if not invitado:
         return render_page(
@@ -334,13 +761,13 @@ def confirmar():
     selected_no = "selected" if invitado.confirmacion == "Rechazado" else ""
     confirmed_section = ""
     if invitado.confirmacion in {"Confirmado", "Rechazado"}:
-        confirmed_section = f"""
-        <p class="muted">Tu respuesta actual: {status_badge(invitado.confirmacion)}.</p>
-        """
+        confirmed_section = f'<p class="muted">Tu respuesta actual: {status_badge(invitado.confirmacion)}.</p>'
+
+    nombre_evento = invitado.evento.nombre if invitado.evento else ""
 
     content = f"""
     <div class="hero">
-        <div class="pill">Confirmación de asistencia</div>
+        <div class="pill">{escape(nombre_evento) or "Confirmación de asistencia"}</div>
         <h1>Hola, {escape(invitado.nombre or '')}</h1>
         <p class="muted">Por favor confirma tu asistencia. Tu respuesta se guardará automáticamente.</p>
         {confirmed_section}
@@ -397,11 +824,9 @@ def submit_form():
     except ValueError:
         acompanantes = 0
 
-    session = Session()
-    invitado = session.query(Invitado).filter_by(uuid=invitado_uuid).first()
+    invitado = g.db.query(Invitado).filter_by(uuid=invitado_uuid).first()
 
     if not invitado:
-        session.close()
         return render_page(
             "Error",
             """
@@ -416,8 +841,7 @@ def submit_form():
     invitado.acompanantes = acompanantes if asistencia == "si" else 0
     invitado.notas = notas
     invitado.fecha_respuesta = datetime.now()
-    session.commit()
-    session.close()
+    g.db.commit()
 
     content = f"""
     <div class="card hero">
@@ -431,130 +855,6 @@ def submit_form():
     </div>
     """
     return render_page("Respuesta registrada", content)
-
-
-@app.route("/dashboard")
-@require_admin_auth
-def dashboard():
-    session = Session()
-    invitados = session.query(Invitado).order_by(Invitado.id.asc()).all()
-
-    total = len(invitados)
-    confirmados = sum(1 for item in invitados if item.confirmacion == "Confirmado")
-    rechazados = sum(1 for item in invitados if item.confirmacion == "Rechazado")
-    pendientes = total - confirmados - rechazados
-    acompanantes = sum(int(item.acompanantes or 0) for item in invitados if item.confirmacion == "Confirmado")
-    public_base = request.host_url.rstrip("/")
-
-    rows = []
-    for item in invitados:
-        fecha = item.fecha_respuesta.strftime("%Y-%m-%d %H:%M") if item.fecha_respuesta else "—"
-        enlace_relativo = f"/confirmar?id={escape(item.uuid)}"
-        enlace_completo = f"{public_base}{enlace_relativo}"
-        rows.append(
-            f"""
-            <tr>
-                <td>{escape(item.nombre or '')}</td>
-                <td>{escape(item.telefono or '') or '—'}</td>
-                <td>{status_badge(item.confirmacion)}</td>
-                <td>{int(item.acompanantes or 0)}</td>
-                <td>{fecha}</td>
-                <td>{escape(item.notas or '') or '—'}</td>
-                <td>
-                    <a href="{enlace_relativo}" target="_blank">Abrir enlace</a>
-                    <div class="link-box">{enlace_completo}</div>
-                </td>
-            </tr>
-            """
-        )
-
-    if not rows:
-        rows.append(
-            """
-            <tr>
-                <td colspan="7">Todavía no hay invitados cargados en la base de datos.</td>
-            </tr>
-            """
-        )
-
-    content = f"""
-    <div class="hero">
-        <div class="pill">Panel AutoConfirm</div>
-        <h1>Dashboard de confirmaciones</h1>
-        <p class="muted">Vista rápida del estado actual de invitados y respuestas.</p>
-    </div>
-
-    <div class="stats">
-        <div class="stat"><span>Total invitados</span><strong>{total}</strong></div>
-        <div class="stat"><span>Confirmados</span><strong>{confirmados}</strong></div>
-        <div class="stat"><span>No asistirán</span><strong>{rechazados}</strong></div>
-        <div class="stat"><span>Pendientes</span><strong>{pendientes}</strong></div>
-        <div class="stat"><span>Acompañantes</span><strong>{acompanantes}</strong></div>
-    </div>
-
-    <div class="card">
-        <div class="toolbar">
-            <div>
-                <h2 style="margin-bottom:6px;">Invitados</h2>
-                <p class="muted" style="margin-bottom:0;">Aquí podrás revisar quién ya respondió y ver el enlace completo individual.</p>
-            </div>
-            <div class="actions">
-                <a class="btn btn-secondary" href="/exportar_csv">Exportar CSV</a>
-            </div>
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>Nombre</th>
-                    <th>Teléfono</th>
-                    <th>Estado</th>
-                    <th>Acompañantes</th>
-                    <th>Respondió</th>
-                    <th>Notas</th>
-                    <th>Enlace</th>
-                </tr>
-            </thead>
-            <tbody>
-                {''.join(rows)}
-            </tbody>
-        </table>
-    </div>
-    """
-    session.close()
-    return render_page("Dashboard AutoConfirm", content)
-
-
-@app.route("/exportar_csv")
-@require_admin_auth
-def exportar_csv():
-    session = Session()
-    invitados = session.query(Invitado).order_by(Invitado.id.asc()).all()
-
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(["Nombre", "Telefono", "Estado", "Acompanantes", "FechaRespuesta", "Notas", "UUID"])
-
-    for item in invitados:
-        fecha = item.fecha_respuesta.strftime("%Y-%m-%d %H:%M:%S") if item.fecha_respuesta else ""
-        writer.writerow([
-            item.nombre or "",
-            item.telefono or "",
-            item.confirmacion or "Pendiente",
-            item.acompanantes or 0,
-            fecha,
-            item.notas or "",
-            item.uuid or "",
-        ])
-
-    session.close()
-    csv_data = buffer.getvalue()
-    buffer.close()
-
-    return Response(
-        csv_data,
-        mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=autoconfirm_resultados.csv"},
-    )
 
 
 @app.route("/privacy")
