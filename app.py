@@ -1,18 +1,31 @@
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 import os
+import secrets
 
 import csv
 import io
 
+from dotenv import load_dotenv
 from flask import Flask, Response, redirect, render_template_string, request, url_for
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from markupsafe import escape
 from sqlalchemy import Column, DateTime, Integer, String, create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "invitados.db"
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+DATABASE_URL = (
+    os.getenv("AUTOCONFIRM_DATABASE_URL", "").strip()
+    or os.getenv("DATABASE_URL", "").strip()
+)
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin").strip()
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
 
 Base = declarative_base()
 
@@ -33,6 +46,13 @@ class Invitado(Base):
 
 if DATABASE_URL:
     normalized_database_url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    # Fuerza el driver psycopg2 explícitamente: versiones nuevas de SQLAlchemy
+    # intentan usar psycopg (v3) por default para "postgresql://" a secas, y
+    # esta app instala psycopg2-binary, no psycopg v3.
+    if normalized_database_url.startswith("postgresql://"):
+        normalized_database_url = normalized_database_url.replace(
+            "postgresql://", "postgresql+psycopg2://", 1
+        )
     engine = create_engine(normalized_database_url)
 else:
     DATA_DIR.mkdir(exist_ok=True)
@@ -63,6 +83,7 @@ def ensure_schema():
 ensure_schema()
 
 app = Flask(__name__)
+limiter = Limiter(key_func=get_remote_address, app=app, storage_uri="memory://")
 
 BASE_HTML = """
 <!DOCTYPE html>
@@ -73,21 +94,25 @@ BASE_HTML = """
     <title>{{ title }}</title>
     <style>
         :root {
-            --bg: #f4f6fb;
-            --card: #ffffff;
-            --text: #1f2937;
-            --muted: #6b7280;
-            --accent: #5166f6;
-            --accent-dark: #3b4bd1;
-            --success: #198754;
-            --danger: #dc2626;
-            --border: #d9e2f1;
+            --bg: #111116;
+            --card: #1a1b24;
+            --text: #f5f3ff;
+            --muted: #a1a1aa;
+            --accent: #7c3aed;
+            --accent-dark: #5b21b6;
+            --success: #8b5cf6;
+            --danger: #f43f5e;
+            --border: #2a2d3a;
+            --input: #242634;
+            --soft: #221a36;
+            --soft-2: #20182d;
+            --soft-3: #261f33;
         }
         * { box-sizing: border-box; }
         body {
             margin: 0;
             font-family: Segoe UI, Arial, sans-serif;
-            background: linear-gradient(180deg, #f6f8fc 0%, #eef3ff 100%);
+            background: linear-gradient(180deg, #0f1016 0%, #171822 100%);
             color: var(--text);
         }
         .wrap {
@@ -99,7 +124,7 @@ BASE_HTML = """
             background: var(--card);
             border: 1px solid var(--border);
             border-radius: 18px;
-            box-shadow: 0 10px 30px rgba(31, 41, 55, 0.08);
+            box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
             padding: 24px;
         }
         h1, h2, h3, p { margin-top: 0; }
@@ -110,13 +135,14 @@ BASE_HTML = """
         }
         .pill {
             display: inline-block;
-            background: #eef2ff;
-            color: var(--accent-dark);
+            background: var(--soft);
+            color: #c4b5fd;
             padding: 8px 12px;
             border-radius: 999px;
             font-size: 13px;
             font-weight: 600;
             margin-bottom: 12px;
+            border: 1px solid var(--border);
         }
         .field { margin-bottom: 16px; }
         label {
@@ -130,8 +156,10 @@ BASE_HTML = """
             border-radius: 12px;
             padding: 12px 14px;
             font-size: 15px;
-            background: #fff;
+            background: var(--input);
+            color: var(--text);
         }
+        input::placeholder, textarea::placeholder { color: var(--muted); }
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -155,8 +183,8 @@ BASE_HTML = """
         }
         .btn-primary { background: var(--accent); color: #fff; }
         .btn-primary:hover { background: var(--accent-dark); }
-        .btn-secondary { background: #eef2ff; color: var(--accent-dark); }
-        .btn-danger { background: #fee2e2; color: var(--danger); }
+        .btn-secondary { background: var(--soft); color: #c4b5fd; border: 1px solid var(--border); }
+        .btn-danger { background: #3a1722; color: #fda4af; border: 1px solid #5b2231; }
         .stats {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -164,7 +192,7 @@ BASE_HTML = """
             margin: 18px 0 24px;
         }
         .stat {
-            background: #f8fbff;
+            background: var(--input);
             border: 1px solid var(--border);
             border-radius: 14px;
             padding: 16px;
@@ -186,7 +214,7 @@ BASE_HTML = """
             padding: 12px 10px;
             vertical-align: top;
         }
-        th { background: #f8fbff; }
+        th { background: var(--soft); }
         .tag {
             display: inline-block;
             padding: 6px 10px;
@@ -194,9 +222,9 @@ BASE_HTML = """
             font-size: 12px;
             font-weight: 700;
         }
-        .tag-pending { background: #fff7d6; color: #9a6700; }
-        .tag-yes { background: #eafaf1; color: #136c3f; }
-        .tag-no { background: #fde8e8; color: #b42318; }
+        .tag-pending { background: #3d2f0d; color: #facc15; }
+        .tag-yes { background: #1f2937; color: #86efac; }
+        .tag-no { background: #3a1722; color: #fda4af; }
         .footer-note {
             margin-top: 14px;
             font-size: 13px;
@@ -238,6 +266,32 @@ def status_badge(status: str) -> str:
     if normalized == "rechazado":
         return '<span class="tag tag-no">No asistirá</span>'
     return '<span class="tag tag-pending">Pendiente</span>'
+
+
+def require_admin_auth(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not ADMIN_PASSWORD:
+            return Response(
+                "El dashboard está deshabilitado: falta configurar ADMIN_PASSWORD en el servidor.",
+                status=503,
+            )
+
+        auth = request.authorization
+        valid = bool(auth) and secrets.compare_digest(
+            auth.username or "", ADMIN_USERNAME
+        ) and secrets.compare_digest(auth.password or "", ADMIN_PASSWORD)
+
+        if not valid:
+            return Response(
+                "Acceso restringido.",
+                status=401,
+                headers={"WWW-Authenticate": 'Basic realm="AutoConfirm Dashboard"'},
+            )
+
+        return view(*args, **kwargs)
+
+    return wrapped
 
 
 @app.route("/")
@@ -287,14 +341,14 @@ def confirmar():
     content = f"""
     <div class="hero">
         <div class="pill">Confirmación de asistencia</div>
-        <h1>Hola, {invitado.nombre}</h1>
+        <h1>Hola, {escape(invitado.nombre or '')}</h1>
         <p class="muted">Por favor confirma tu asistencia. Tu respuesta se guardará automáticamente.</p>
         {confirmed_section}
     </div>
 
     <div class="card">
         <form action="/submit_form" method="post">
-            <input type="hidden" name="uuid" value="{invitado.uuid}">
+            <input type="hidden" name="uuid" value="{escape(invitado.uuid)}">
 
             <div class="field">
                 <label for="asistencia">¿Asistirás al evento?</label>
@@ -307,17 +361,17 @@ def confirmar():
             <div class="grid">
                 <div class="field">
                     <label for="acompanantes">Número de acompañantes</label>
-                    <input type="number" name="acompanantes" id="acompanantes" value="{invitado.acompanantes or 0}" min="0" max="20">
+                    <input type="number" name="acompanantes" id="acompanantes" value="{int(invitado.acompanantes or 0)}" min="0" max="20">
                 </div>
                 <div class="field">
                     <label for="telefono">Teléfono de referencia</label>
-                    <input type="text" id="telefono" value="{invitado.telefono or ''}" disabled>
+                    <input type="text" id="telefono" value="{escape(invitado.telefono or '')}" disabled>
                 </div>
             </div>
 
             <div class="field">
                 <label for="notas">Notas (opcional)</label>
-                <textarea name="notas" id="notas" rows="4" placeholder="Ej. Llegaré un poco tarde, llevo 2 niños, etc.">{invitado.notas or ''}</textarea>
+                <textarea name="notas" id="notas" rows="4" placeholder="Ej. Llegaré un poco tarde, llevo 2 niños, etc.">{escape(invitado.notas or '')}</textarea>
             </div>
 
             <div class="actions">
@@ -331,6 +385,7 @@ def confirmar():
 
 
 @app.route("/submit_form", methods=["POST"])
+@limiter.limit("10 per minute")
 def submit_form():
     invitado_uuid = request.form.get("uuid", "").strip()
     asistencia = request.form.get("asistencia", "").strip().lower()
@@ -371,7 +426,7 @@ def submit_form():
         <p>Hemos guardado tu respuesta correctamente.</p>
         <p class="muted">Estado: {status_badge('Confirmado' if asistencia == 'si' else 'Rechazado')}</p>
         <div class="actions" style="justify-content:center;">
-            <a class="btn btn-secondary" href="/confirmar?id={invitado_uuid}">Volver a ver mi respuesta</a>
+            <a class="btn btn-secondary" href="/confirmar?id={escape(invitado_uuid)}">Volver a ver mi respuesta</a>
         </div>
     </div>
     """
@@ -379,6 +434,7 @@ def submit_form():
 
 
 @app.route("/dashboard")
+@require_admin_auth
 def dashboard():
     session = Session()
     invitados = session.query(Invitado).order_by(Invitado.id.asc()).all()
@@ -393,17 +449,17 @@ def dashboard():
     rows = []
     for item in invitados:
         fecha = item.fecha_respuesta.strftime("%Y-%m-%d %H:%M") if item.fecha_respuesta else "—"
-        enlace_relativo = f"/confirmar?id={item.uuid}"
+        enlace_relativo = f"/confirmar?id={escape(item.uuid)}"
         enlace_completo = f"{public_base}{enlace_relativo}"
         rows.append(
             f"""
             <tr>
-                <td>{item.nombre}</td>
-                <td>{item.telefono or '—'}</td>
+                <td>{escape(item.nombre or '')}</td>
+                <td>{escape(item.telefono or '') or '—'}</td>
                 <td>{status_badge(item.confirmacion)}</td>
-                <td>{item.acompanantes or 0}</td>
+                <td>{int(item.acompanantes or 0)}</td>
                 <td>{fecha}</td>
-                <td>{item.notas or '—'}</td>
+                <td>{escape(item.notas or '') or '—'}</td>
                 <td>
                     <a href="{enlace_relativo}" target="_blank">Abrir enlace</a>
                     <div class="link-box">{enlace_completo}</div>
@@ -469,6 +525,7 @@ def dashboard():
 
 
 @app.route("/exportar_csv")
+@require_admin_auth
 def exportar_csv():
     session = Session()
     invitados = session.query(Invitado).order_by(Invitado.id.asc()).all()

@@ -4,37 +4,59 @@ import threading
 import time
 import tkinter as tk
 import uuid
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import pandas as pd
 import requests
+from dotenv import load_dotenv
 from sqlalchemy import Column, DateTime, Integer, String, create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+load_dotenv()
 
-APP_NAME = "AutoConfirm API Test"
-APP_BG = "#F4F6FB"
-CARD_BG = "#FFFFFF"
-ACCENT = "#5166F6"
-ACCENT_DARK = "#3B4BD1"
-SUCCESS = "#198754"
-WARNING = "#F59E0B"
-DANGER = "#DC2626"
-TEXT = "#1F2937"
-MUTED = "#6B7280"
-BORDER = "#D9E2F1"
-SOFT_BLUE = "#EEF2FF"
-SOFT_GREEN = "#ECFDF3"
-SOFT_YELLOW = "#FEF3C7"
+
+APP_NAME = "AutoConfirm"
+APP_BG = "#111116"
+CARD_BG = "#1A1B24"
+ACCENT = "#7C3AED"
+ACCENT_DARK = "#5B21B6"
+SUCCESS = "#8B5CF6"
+WARNING = "#A78BFA"
+DANGER = "#F43F5E"
+TEXT = "#F5F3FF"
+MUTED = "#A1A1AA"
+BORDER = "#2A2D3A"
+INPUT_BG = "#242634"
+INPUT_FG = "#F5F3FF"
+INPUT_BORDER = "#34384A"
+SOFT_BLUE = "#221A36"
+SOFT_GREEN = "#20182D"
+SOFT_YELLOW = "#261F33"
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DEFAULT_TEMPLATE = DATA_DIR / "invitados.xlsx"
 DEFAULT_URL_SAMPLE = "https://autoconfirm.onrender.com/confirmar?id=abc123"
-DEFAULT_LANGUAGE = "es_MX"
-DEFAULT_TEMPLATE_NAME = "event_invitation_confirm"
 API_VERSION = "v22.0"
 DB_PATH = DATA_DIR / "invitados.db"
-DATABASE_URL = os.getenv("AUTOCONFIRM_DATABASE_URL", "").strip() or os.getenv("DATABASE_URL", "").strip()
+
+# Configuración por variables de entorno (ver .env.example en la raíz del
+# proyecto). Nunca se hardcodean credenciales aquí.
+#
+# NOTA (2026-09-30): esta ruta de envío directo por Meta Cloud API quedó
+# deprioritizada en favor de un BSP (ver experimental/main_apptwilio.py).
+# Se conserva como referencia; no se le está invirtiendo trabajo nuevo.
+PHONE_NUMBER_ID = os.getenv("META_PHONE_NUMBER_ID", "").strip()
+ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "").strip()
+TEMPLATE_NAME = os.getenv("META_TEMPLATE_NAME", "event_invitation_confirm").strip()
+LANGUAGE_CODE = os.getenv("META_LANGUAGE_CODE", "es_MX").strip()
+CONFIRMATION_BASE_URL = os.getenv("CONFIRMATION_BASE_URL", "https://autoconfirm.onrender.com/confirmar").strip()
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://autoconfirm.onrender.com/dashboard").strip()
+
+DATABASE_URL = (
+    os.getenv("AUTOCONFIRM_DATABASE_URL", "").strip()
+    or os.getenv("DATABASE_URL", "").strip()
+)
 
 Base = declarative_base()
 
@@ -55,9 +77,14 @@ class Invitado(Base):
 
 if DATABASE_URL:
     normalized_database_url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    if normalized_database_url.startswith("postgresql://"):
+        normalized_database_url = normalized_database_url.replace(
+            "postgresql://", "postgresql+psycopg2://", 1
+        )
     engine = create_engine(normalized_database_url)
     DATABASE_MODE = "Postgres compartido"
 else:
+    DATA_DIR.mkdir(exist_ok=True)
     engine = create_engine(f"sqlite:///{DB_PATH.as_posix()}")
     DATABASE_MODE = "SQLite local"
 
@@ -101,7 +128,7 @@ class App:
         self.sent_contacts = 0
         self.failed_contacts = 0
 
-        self.status_var = tk.StringVar(value="Selecciona un Excel para comenzar.")
+        self.status_var = tk.StringVar(value="Carga tu archivo para comenzar.")
         self.summary_var = tk.StringVar(value="Sin archivo cargado")
         self.country_code_var = tk.StringVar(value="52")
         self.contacts_count_var = tk.StringVar(value="0 contactos")
@@ -109,11 +136,12 @@ class App:
         self.invalid_count_var = tk.StringVar(value="0 observaciones")
         self.delay_var = tk.IntVar(value=2)
 
-        self.phone_number_id_var = tk.StringVar()
-        self.access_token_var = tk.StringVar()
-        self.template_name_var = tk.StringVar(value=DEFAULT_TEMPLATE_NAME)
-        self.language_code_var = tk.StringVar(value=DEFAULT_LANGUAGE)
-        self.link_var = tk.StringVar(value="https://autoconfirm.onrender.com/confirmar")
+        self.phone_number_id_var = tk.StringVar(value=PHONE_NUMBER_ID)
+        self.access_token_var = tk.StringVar(value=ACCESS_TOKEN)
+        self.template_name_var = tk.StringVar(value=TEMPLATE_NAME)
+        self.language_code_var = tk.StringVar(value=LANGUAGE_CODE)
+        self.link_var = tk.StringVar(value=CONFIRMATION_BASE_URL)
+        self.dashboard_url_var = tk.StringVar(value=DASHBOARD_URL)
 
         self._configure_styles()
         self.create_widgets()
@@ -127,29 +155,28 @@ class App:
 
         style.configure(
             "Main.Horizontal.TProgressbar",
-            troughcolor="#E9EEF8",
+            troughcolor="#232533",
             background=ACCENT,
-            bordercolor="#E9EEF8",
+            bordercolor="#232533",
             lightcolor=ACCENT,
             darkcolor=ACCENT,
         )
         style.configure(
             "Treeview",
-            background="#FFFFFF",
-            fieldbackground="#FFFFFF",
+            background=INPUT_BG,
+            fieldbackground=INPUT_BG,
             foreground=TEXT,
             rowheight=28,
             bordercolor=BORDER,
         )
         style.configure("Treeview.Heading", background=SOFT_BLUE, foreground=TEXT, relief="flat")
-        style.map("Treeview", background=[("selected", "#DCE5FF")], foreground=[("selected", TEXT)])
+        style.map("Treeview", background=[("selected", "#312E81")], foreground=[("selected", "#FFFFFF")])
 
     def create_widgets(self):
         container = tk.Frame(self.root, bg=APP_BG)
         container.pack(fill="both", expand=True, padx=18, pady=18)
 
         self._build_header(container)
-        self._build_api_card(container)
         self._build_upload_card(container)
         self._build_bottom_section(container)
         self._build_middle_section(container)
@@ -161,48 +188,11 @@ class App:
         tk.Label(header, text=APP_NAME, font=("Segoe UI", 24, "bold"), bg=APP_BG, fg=TEXT).pack(anchor="w")
         tk.Label(
             header,
-            text="Versión secundaria para probar envíos con WhatsApp Cloud API usando una plantilla aprobada.",
+            text="Carga tu lista, envía invitaciones y da seguimiento a confirmaciones desde una sola vista.",
             font=("Segoe UI", 10),
             bg=APP_BG,
             fg=MUTED,
         ).pack(anchor="w", pady=(6, 0))
-
-    def _build_api_card(self, parent):
-        api_card = tk.Frame(parent, bg=CARD_BG, bd=1, relief="solid")
-        api_card.pack(fill="x", pady=(0, 12))
-
-        tk.Label(api_card, text="Configuración API", font=("Segoe UI", 11, "bold"), bg=CARD_BG, fg=TEXT).grid(
-            row=0, column=0, columnspan=4, sticky="w", padx=12, pady=(10, 6)
-        )
-
-        fields = [
-            ("Phone Number ID", self.phone_number_id_var),
-            ("Access Token", self.access_token_var),
-            ("Nombre plantilla", self.template_name_var),
-            ("Idioma plantilla", self.language_code_var),
-            ("URL base confirmación", self.link_var),
-        ]
-
-        for idx, (label, variable) in enumerate(fields, start=1):
-            tk.Label(api_card, text=label, font=("Segoe UI", 9, "bold"), bg=CARD_BG, fg=TEXT).grid(
-                row=idx, column=0, sticky="w", padx=12, pady=3
-            )
-            entry = tk.Entry(api_card, textvariable=variable, relief="solid", bd=1)
-            if label == "Access Token":
-                entry.config(show="*")
-            entry.grid(row=idx, column=1, columnspan=3, sticky="ew", padx=(0, 12), pady=3, ipady=3)
-
-        api_card.grid_columnconfigure(1, weight=1)
-        api_card.grid_columnconfigure(2, weight=1)
-        api_card.grid_columnconfigure(3, weight=1)
-
-        tk.Label(
-            api_card,
-            text=f"Configurado por defecto con tu plantilla aprobada event_invitation_confirm / es_MX. Base actual: {DATABASE_MODE}. La app mandará un link único por invitado.",
-            font=("Segoe UI", 9),
-            bg=CARD_BG,
-            fg=MUTED,
-        ).grid(row=6, column=0, columnspan=4, sticky="w", padx=12, pady=(2, 10))
 
     def _build_upload_card(self, parent):
         top_card = tk.Frame(parent, bg=CARD_BG, bd=1, relief="solid", highlightthickness=0)
@@ -210,7 +200,7 @@ class App:
 
         title_row = tk.Frame(top_card, bg=CARD_BG)
         title_row.pack(fill="x", padx=12, pady=(10, 6))
-        tk.Label(title_row, text="Lista de invitados", font=("Segoe UI", 12, "bold"), bg=CARD_BG, fg=TEXT).pack(side="left")
+        tk.Label(title_row, text="Base de invitados", font=("Segoe UI", 12, "bold"), bg=CARD_BG, fg=TEXT).pack(side="left")
         tk.Label(title_row, textvariable=self.summary_var, font=("Segoe UI", 10, "bold"), bg=CARD_BG, fg=SUCCESS).pack(side="right")
 
         file_row = tk.Frame(top_card, bg=CARD_BG)
@@ -219,7 +209,7 @@ class App:
         self.file_label = tk.Label(
             file_row,
             text="Ningún archivo seleccionado",
-            bg="#F8FAFC",
+            bg=INPUT_BG,
             fg=MUTED,
             relief="solid",
             borderwidth=1,
@@ -231,7 +221,7 @@ class App:
 
         tk.Button(
             file_row,
-            text="Seleccionar Excel",
+            text="Cargar archivo",
             command=self.select_file,
             bg=ACCENT,
             fg="white",
@@ -248,14 +238,41 @@ class App:
         settings_row.pack(fill="x", padx=12, pady=(0, 8))
 
         tk.Label(settings_row, text="Prefijo país", font=("Segoe UI", 10), bg=CARD_BG, fg=TEXT).pack(side="left")
-        tk.Entry(settings_row, textvariable=self.country_code_var, width=8, justify="center", relief="solid", bd=1).pack(side="left", padx=(8, 20))
+        tk.Entry(
+            settings_row,
+            textvariable=self.country_code_var,
+            width=8,
+            justify="center",
+            relief="solid",
+            bd=1,
+            bg=INPUT_BG,
+            fg=INPUT_FG,
+            insertbackground=INPUT_FG,
+            highlightthickness=1,
+            highlightbackground=INPUT_BORDER,
+            highlightcolor=ACCENT,
+        ).pack(side="left", padx=(8, 20))
 
         tk.Label(settings_row, text="Pausa entre mensajes (seg)", font=("Segoe UI", 10), bg=CARD_BG, fg=TEXT).pack(side="left")
-        tk.Spinbox(settings_row, from_=1, to=15, textvariable=self.delay_var, width=8, justify="center").pack(side="left", padx=(8, 20))
+        tk.Spinbox(
+            settings_row,
+            from_=1,
+            to=15,
+            textvariable=self.delay_var,
+            width=8,
+            justify="center",
+            bg=INPUT_BG,
+            fg=INPUT_FG,
+            insertbackground=INPUT_FG,
+            highlightthickness=1,
+            highlightbackground=INPUT_BORDER,
+            highlightcolor=ACCENT,
+            buttonbackground=INPUT_BG,
+        ).pack(side="left", padx=(8, 20))
 
         tk.Button(
             settings_row,
-            text="Usar Excel de ejemplo",
+            text="Cargar ejemplo",
             command=self.load_default_template,
             bg=SOFT_BLUE,
             fg=ACCENT_DARK,
@@ -280,10 +297,10 @@ class App:
         left_card = tk.Frame(middle_frame, bg=CARD_BG, bd=1, relief="solid")
         left_card.pack(side="left", fill="both", expand=True, padx=(0, 6))
 
-        tk.Label(left_card, text="Vista previa de la plantilla", font=("Segoe UI", 12, "bold"), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(16, 4))
+        tk.Label(left_card, text="Mensaje de referencia", font=("Segoe UI", 12, "bold"), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16, pady=(16, 4))
         tk.Label(
             left_card,
-            text="Esta app envía una plantilla aprobada con nombre y enlace. Aquí solo editas una nota de referencia.",
+            text="Aquí puedes dejar una nota breve de referencia para la operación del envío.",
             font=("Segoe UI", 9),
             bg=CARD_BG,
             fg=MUTED,
@@ -296,6 +313,9 @@ class App:
             font=("Segoe UI", 10),
             relief="solid",
             borderwidth=1,
+            bg=INPUT_BG,
+            fg=INPUT_FG,
+            insertbackground=INPUT_FG,
             padx=10,
             pady=10,
         )
@@ -327,11 +347,11 @@ class App:
 
         self.send_button = tk.Button(
             actions_row,
-            text="Enviar por API",
+            text="Enviar invitaciones",
             command=self.start_sending,
             bg=SUCCESS,
             fg="white",
-            activebackground="#157347",
+            activebackground="#7C3AED",
             activeforeground="white",
             relief="flat",
             cursor="hand2",
@@ -340,6 +360,38 @@ class App:
             pady=8,
         )
         self.send_button.pack(side="left")
+
+        self.dashboard_button = tk.Button(
+            actions_row,
+            text="Abrir dashboard",
+            command=self.open_dashboard,
+            bg=ACCENT,
+            fg="white",
+            activebackground=ACCENT_DARK,
+            activeforeground="white",
+            relief="flat",
+            cursor="hand2",
+            font=("Segoe UI", 10, "bold"),
+            padx=18,
+            pady=8,
+        )
+        self.dashboard_button.pack(side="left", padx=(8, 0))
+
+        self.clear_data_button = tk.Button(
+            actions_row,
+            text="Borrar datos",
+            command=self.clear_dashboard_data,
+            bg=DANGER,
+            fg="white",
+            activebackground="#E11D48",
+            activeforeground="white",
+            relief="flat",
+            cursor="hand2",
+            font=("Segoe UI", 10, "bold"),
+            padx=18,
+            pady=8,
+        )
+        self.clear_data_button.pack(side="left", padx=(8, 0))
 
         ttk.Progressbar(bottom_card, style="Main.Horizontal.TProgressbar", variable=tk.DoubleVar(value=0))
 
@@ -351,7 +403,17 @@ class App:
         tk.Label(status_row, textvariable=self.status_var, font=("Segoe UI", 9), bg=CARD_BG, fg=MUTED).pack(side="left")
 
         tk.Label(bottom_card, text="Registro", font=("Segoe UI", 11, "bold"), bg=CARD_BG, fg=TEXT).pack(anchor="w", padx=16)
-        self.log_text = scrolledtext.ScrolledText(bottom_card, wrap=tk.WORD, height=6, font=("Consolas", 9), relief="solid", borderwidth=1)
+        self.log_text = scrolledtext.ScrolledText(
+            bottom_card,
+            wrap=tk.WORD,
+            height=6,
+            font=("Consolas", 9),
+            relief="solid",
+            borderwidth=1,
+            bg=INPUT_BG,
+            fg=INPUT_FG,
+            insertbackground=INPUT_FG,
+        )
         self.log_text.pack(fill="both", expand=True, padx=12, pady=(6, 10))
         self.log_text.configure(state="disabled")
 
@@ -466,6 +528,71 @@ class App:
         base_url = self.link_var.get().strip().rstrip("/")
         return f"{base_url}?id={invitado_uuid}"
 
+    def open_dashboard(self):
+        dashboard_url = self.dashboard_url_var.get().strip()
+        if not dashboard_url:
+            messagebox.showerror("Falta información", "Configura DASHBOARD_URL dentro del código.")
+            return
+
+        if not re.match(r"^https?://", dashboard_url, re.IGNORECASE):
+            messagebox.showerror("URL inválida", "La URL del dashboard debe iniciar con http:// o https://")
+            return
+
+        opened = webbrowser.open(dashboard_url)
+        if opened:
+            self.set_status("Dashboard abierto en el navegador predeterminado.")
+            self.log(f"Dashboard abierto: {dashboard_url}")
+        else:
+            messagebox.showerror("No se pudo abrir", "No se pudo abrir el dashboard en el navegador.")
+
+    def clear_dashboard_data(self):
+        if self.is_sending:
+            messagebox.showwarning("Proceso en curso", "No puedes borrar datos mientras se están enviando invitaciones.")
+            return
+
+        confirmed = messagebox.askyesno(
+            "Advertencia importante",
+            "Esto borrará todos los invitados, links únicos y confirmaciones guardadas en la base de datos actual.\n\n"
+            "El dashboard quedará vacío al volver a abrirlo.\n\n"
+            "¿Deseas continuar?",
+            icon="warning",
+        )
+        if not confirmed:
+            return
+
+        second_confirm = messagebox.askyesno(
+            "Confirmación final",
+            "Esta acción no se puede deshacer desde la app.\n\n"
+            "¿Seguro que quieres borrar todos los datos actuales?",
+            icon="warning",
+        )
+        if not second_confirm:
+            return
+
+        session = Session()
+        try:
+            deleted_rows = session.query(Invitado).delete()
+            session.commit()
+        except Exception as error:
+            session.rollback()
+            messagebox.showerror("Error al borrar", str(error))
+            return
+        finally:
+            session.close()
+
+        self.file_path = ""
+        self.contacts_df = pd.DataFrame()
+        self.summary_var.set("Sin archivo cargado")
+        self.contacts_count_var.set("0 contactos")
+        self.valid_count_var.set("0 válidos")
+        self.invalid_count_var.set("0 observaciones")
+        self.file_label.config(text="Ningún archivo seleccionado")
+        self.progress.configure(value=0)
+        self.refresh_preview()
+        self.set_status("Datos borrados. El dashboard quedó listo para una nueva carga.")
+        self.log(f"Se borraron {deleted_rows} registros de la base de datos.")
+        messagebox.showinfo("Datos eliminados", "Se borraron los datos actuales. El dashboard ya puede iniciar vacío.")
+
     def is_official_template_mode(self):
         return self.template_name_var.get().strip() != "hello_world"
 
@@ -498,19 +625,19 @@ class App:
 
     def validate_api_fields(self):
         if not self.phone_number_id_var.get().strip():
-            messagebox.showerror("Falta información", "Captura el Phone Number ID.")
+            messagebox.showerror("Falta información", "Configura PHONE_NUMBER_ID dentro del código.")
             return False
         if not self.access_token_var.get().strip():
-            messagebox.showerror("Falta información", "Captura el Access Token.")
+            messagebox.showerror("Falta información", "Configura ACCESS_TOKEN dentro del código.")
             return False
         if not self.template_name_var.get().strip():
-            messagebox.showerror("Falta información", "Captura el nombre de la plantilla.")
+            messagebox.showerror("Falta información", "Configura TEMPLATE_NAME dentro del código.")
             return False
         if not self.language_code_var.get().strip():
-            messagebox.showerror("Falta información", "Captura el idioma de la plantilla.")
+            messagebox.showerror("Falta información", "Configura LANGUAGE_CODE dentro del código.")
             return False
         if not self.link_var.get().strip():
-            messagebox.showerror("Falta información", "Captura la URL base de confirmación.")
+            messagebox.showerror("Falta información", "Configura CONFIRMATION_BASE_URL dentro del código.")
             return False
         return True
 
@@ -542,8 +669,8 @@ class App:
         self.failed_contacts = 0
         self.progress.configure(maximum=len(self.contacts_df), value=0)
         self.send_button.config(state="disabled", text="Enviando...")
-        self.set_status("Preparando envío por API...")
-        self.log("Inicio del envío por API")
+        self.set_status("Preparando envío...")
+        self.log("Inicio del envío")
 
         worker = threading.Thread(target=self._send_messages_worker, daemon=True)
         worker.start()
@@ -620,7 +747,7 @@ class App:
 
     def finish_sending(self):
         self.is_sending = False
-        self.send_button.config(state="normal", text="Enviar por API")
+        self.send_button.config(state="normal", text="Enviar invitaciones")
         summary = f"Proceso terminado. Enviados: {self.sent_contacts}. Con error: {self.failed_contacts}."
         self.set_status(summary)
         self.log(summary)
