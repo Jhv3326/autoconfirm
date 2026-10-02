@@ -22,7 +22,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from markupsafe import escape
 
-from models import Evento, EventoColaborador, Invitado, Session, Usuario, init_db
+from models import Evento, EventoColaborador, Invitado, Organizacion, Session, Usuario, init_db
 from twilio_sender import enviar_invitaciones_evento
 
 load_dotenv()
@@ -193,6 +193,7 @@ BASE_HTML = """
             color: var(--muted);
             text-align: center;
         }
+        .footer-note a { color: #c4b5fd; }
         .toolbar {
             display: flex;
             justify-content: space-between;
@@ -244,12 +245,14 @@ def render_page(title: str, content: str):
 def topbar() -> str:
     if not g.usuario:
         return ""
+    config_link = f'<a href="{url_for("configuracion")}">Configuración</a>&nbsp;·&nbsp;' if g.usuario.es_admin else ""
     return f"""
     <div class="topbar">
         <a href="{url_for('eventos_lista')}">AutoConfirm</a>
         <div>
             <span class="muted">{escape(g.usuario.email)} · {escape(g.usuario.organizacion.nombre)}</span>
             &nbsp;·&nbsp;
+            {config_link}
             <a href="{url_for('logout')}">Cerrar sesión</a>
         </div>
     </div>
@@ -289,6 +292,18 @@ def login_required(view):
     def wrapped(*args, **kwargs):
         if not g.usuario:
             return redirect(url_for("login", next=request.path))
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not g.usuario:
+            return redirect(url_for("login", next=request.path))
+        if not g.usuario.es_admin:
+            return render_page("No autorizado", f'{topbar()}<div class="card"><h1>No autorizado</h1><p class="muted">Solo un administrador de tu empresa puede ver esta página.</p></div>'), 403
         return view(*args, **kwargs)
 
     return wrapped
@@ -334,6 +349,7 @@ def login():
             </div>
         </form>
     </div>
+    <div class="footer-note"><a href="/privacy">Privacidad</a> · <a href="/terms">Términos de servicio</a></div>
     """
     return render_page("Iniciar sesión", content)
 
@@ -725,6 +741,95 @@ def evento_exportar_csv(evento_id):
     )
 
 
+@app.route("/configuracion", methods=["GET", "POST"])
+@admin_required
+def configuracion():
+    organizacion = g.db.get(Organizacion, g.usuario.organizacion_id)
+    guardado = False
+
+    if request.method == "POST":
+        organizacion.twilio_account_sid = request.form.get("twilio_account_sid", "").strip()
+        organizacion.twilio_whatsapp_from = request.form.get("twilio_whatsapp_from", "").strip()
+        organizacion.twilio_content_sid = request.form.get("twilio_content_sid", "").strip()
+
+        nuevo_token = request.form.get("twilio_auth_token", "").strip()
+        if nuevo_token:
+            organizacion.twilio_auth_token = nuevo_token
+
+        g.db.commit()
+        guardado = True
+
+    es_sandbox = organizacion.twilio_whatsapp_from.strip() == "whatsapp:+14155238886"
+    sid_actual = organizacion.twilio_account_sid or ""
+    sid_enmascarado = f"{sid_actual[:6]}…{sid_actual[-4:]}" if len(sid_actual) > 10 else (sid_actual or "— sin configurar —")
+    token_configurado = bool(organizacion.twilio_auth_token_enc)
+
+    aviso_sandbox = ""
+    if es_sandbox:
+        aviso_sandbox = """
+        <div class="flash">
+            <strong>Usando el sandbox de prueba de Twilio.</strong>
+            Solo funciona con números que hicieron "join" al sandbox, y expira a los 3 días.
+            Para mandar mensajes a tus invitados reales sin que se unan primero, necesitas en Twilio
+            un <strong>WhatsApp Sender</strong> propio aprobado (número de producción) — eso puede
+            implicar costo y verificación de negocio en Meta. Mientras tanto, el sandbox sirve para seguir probando.
+        </div>
+        """
+    elif not sid_actual:
+        aviso_sandbox = """
+        <div class="flash">
+            Todavía no has configurado Twilio para esta organización. Sin esto, el botón
+            "Enviar invitaciones" de tus eventos no va a funcionar.
+        </div>
+        """
+
+    guardado_html = '<p class="flash">Configuración guardada.</p>' if guardado else ""
+
+    content = f"""
+    {topbar()}
+    <div class="hero">
+        <div class="pill">Configuración</div>
+        <h1>Credenciales de Twilio</h1>
+        <p class="muted">Esto aplica a todos los eventos de {escape(organizacion.nombre)}.</p>
+    </div>
+
+    {aviso_sandbox}
+    {guardado_html}
+
+    <div class="card">
+        <form method="post">
+            <div class="field">
+                <label for="twilio_account_sid">Twilio Account SID</label>
+                <input type="text" name="twilio_account_sid" id="twilio_account_sid" value="{escape(sid_actual)}" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" required>
+            </div>
+            <div class="field">
+                <label for="twilio_auth_token">Twilio Auth Token</label>
+                <input type="password" name="twilio_auth_token" id="twilio_auth_token" placeholder="{'(dejar en blanco para no cambiarlo)' if token_configurado else 'Pega tu Auth Token'}">
+                <p class="muted" style="margin-top:6px;">Actual: {'configurado (oculto)' if token_configurado else 'sin configurar'}. Se guarda cifrado.</p>
+            </div>
+            <div class="field">
+                <label for="twilio_whatsapp_from">Número de WhatsApp (From)</label>
+                <input type="text" name="twilio_whatsapp_from" id="twilio_whatsapp_from" value="{escape(organizacion.twilio_whatsapp_from or '')}" placeholder="whatsapp:+14155238886" required>
+            </div>
+            <div class="field">
+                <label for="twilio_content_sid">Content SID de plantilla aprobada (opcional)</label>
+                <input type="text" name="twilio_content_sid" id="twilio_content_sid" value="{escape(organizacion.twilio_content_sid or '')}" placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
+                <p class="muted" style="margin-top:6px;">Sin esto, se manda texto libre: solo llega dentro del sandbox o de una conversación ya abierta de 24h.</p>
+            </div>
+            <div class="actions">
+                <button class="btn btn-primary" type="submit">Guardar</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="card" style="margin-top:18px;">
+        <h2>Account SID actual</h2>
+        <p class="muted">{escape(sid_enmascarado)}</p>
+    </div>
+    """
+    return render_page("Configuración", content)
+
+
 # --- Páginas públicas (sin login) --------------------------------------------
 
 
@@ -879,6 +984,50 @@ def privacy():
     </div>
     """
     return render_page("Política de privacidad", content)
+
+
+@app.route("/terms")
+def terms():
+    content = """
+    <div class="hero">
+        <div class="pill">AutoConfirm</div>
+        <h1>Términos de servicio</h1>
+        <p class="muted">Última actualización: octubre 2026.</p>
+    </div>
+
+    <div class="card">
+        <h2>1. El servicio</h2>
+        <p>AutoConfirm es una herramienta para que empresas organizadoras de eventos (la "Organización") gestionen invitaciones, confirmaciones de asistencia y el envío de mensajes de WhatsApp a sus propios invitados, a través de un panel web y de la plataforma de WhatsApp Business operada por un proveedor externo (Twilio u otro BSP autorizado).</p>
+
+        <h2>2. Cuentas y acceso</h2>
+        <p>Cada Organización recibe una o más cuentas de usuario para su personal. La Organización es responsable de mantener la confidencialidad de sus credenciales y de toda actividad realizada desde sus cuentas, así como de revocar el acceso a personal que deje de colaborar con ella.</p>
+
+        <h2>3. Uso aceptable de WhatsApp</h2>
+        <p>La Organización es la única responsable de contar con el consentimiento de las personas a quienes les envía mensajes a través de AutoConfirm. Queda prohibido usar el servicio para enviar mensajes no solicitados (spam), contenido engañoso, o a listas de contactos que no hayan autorizado recibir comunicación de la Organización. El incumplimiento de las políticas de WhatsApp Business puede resultar en el bloqueo del número de la Organización por parte de Meta/Twilio, fuera del control de AutoConfirm.</p>
+
+        <h2>4. Credenciales de terceros (Twilio)</h2>
+        <p>Cuando la Organización proporciona sus propias credenciales de Twilio (u otro proveedor de WhatsApp), es responsable de la vigencia, costos y cumplimiento de los términos de dicho proveedor. AutoConfirm almacena estas credenciales cifradas, pero no es responsable por suspensiones, costos o políticas impuestas por el proveedor externo.</p>
+
+        <h2>5. Pagos</h2>
+        <p>Las condiciones comerciales (precio, periodicidad, forma de pago) se acuerdan directamente entre AutoConfirm y cada Organización cliente, fuera de esta plataforma, salvo que se indique lo contrario por escrito.</p>
+
+        <h2>6. Propiedad de los datos</h2>
+        <p>Los datos de invitados que la Organización carga al servicio (nombres, teléfonos, respuestas) son propiedad de la Organización. AutoConfirm los trata conforme a su <a href="/privacy">política de privacidad</a> y los conserva mientras la cuenta esté activa.</p>
+
+        <h2>7. Límite de responsabilidad</h2>
+        <p>AutoConfirm se ofrece "tal cual". No garantizamos disponibilidad ininterrumpida del servicio ni de los proveedores externos (Twilio, Meta, Render) de los que depende. En la máxima medida permitida por la ley, AutoConfirm no será responsable por daños indirectos derivados del uso del servicio.</p>
+
+        <h2>8. Terminación</h2>
+        <p>Cualquiera de las partes puede terminar el servicio con aviso previo. Al terminar, la Organización puede solicitar la exportación de sus datos antes de su eliminación.</p>
+
+        <h2>9. Cambios a estos términos</h2>
+        <p>Podemos actualizar estos términos ocasionalmente. Los cambios relevantes se notificarán a los administradores de cada Organización.</p>
+
+        <h2>10. Ley aplicable</h2>
+        <p>Estos términos se rigen por las leyes de los Estados Unidos Mexicanos.</p>
+    </div>
+    """
+    return render_page("Términos de servicio", content)
 
 
 if __name__ == "__main__":
