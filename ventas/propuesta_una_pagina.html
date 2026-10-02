@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoConfirm | Propuesta</title>
+<!--
+  Documento para entregar a un prospecto. Para sacar PDF: abrir en el navegador -> Imprimir -> Guardar como PDF
+  (activa "Gráficos de fondo" si quieres conservar los colores).
+  ANTES DE USAR: reemplaza todo lo que está entre [ ] (precio, nombre, contacto).
+-->
+<style>
+  :root { --brand:#128c5a; --text:#14211c; --muted:#55645d; --border:#dfe7e2; --soft:#f4f7f5; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#eef2ef; color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; line-height:1.5; }
+  .page { max-width:820px; margin:24px auto; background:#fff; padding:44px 48px; border-radius:6px; box-shadow:0 2px 12px rgba(0,0,0,.08); }
+  .head { display:flex; justify-content:space-between; align-items:baseline; border-bottom:3px solid var(--brand); padding-bottom:12px; }
+  .logo { font-size:26px; font-weight:800; letter-spacing:-.02em; } .logo span { color:var(--brand); }
+  .tag { color:var(--muted); font-size:14px; }
+  h1 { font-size:26px; line-height:1.2; margin:26px 0 8px; letter-spacing:-.02em; }
+  h2 { font-size:15px; text-transform:uppercase; letter-spacing:.06em; color:var(--brand); margin:26px 0 10px; }
+  p { margin:0 0 10px; }
+  .lead { font-size:17px; color:var(--muted); }
+  .steps { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  .box { background:var(--soft); border:1px solid var(--border); border-radius:10px; padding:14px; font-size:14px; }
+  .box b { display:block; margin-bottom:4px; font-size:15px; }
+  ul { margin:0; padding-left:20px; } li { margin:4px 0; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+  .price { border:2px solid var(--brand); border-radius:10px; padding:14px 16px; }
+  .small { font-size:12.5px; color:var(--muted); }
+  .foot { margin-top:30px; padding-top:14px; border-top:1px solid var(--border); font-size:14px; }
+  @media (max-width:640px) { .page{padding:24px 18px; margin:0; border-radius:0;} .steps,.two{grid-template-columns:1fr;} }
+  @media print { body{background:#fff;} .page{box-shadow:none; margin:0; max-width:none; padding:0;} }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="head">
+    <div class="logo">Auto<span>Confirm</span></div>
+    <div class="tag">Confirmaciones de asistencia por WhatsApp</div>
+  </div>
+
+  <h1>Sabe quién asiste a tus eventos sin perseguir a nadie</h1>
+  <p class="lead">AutoConfirm envía la invitación de cada evento por WhatsApp y registra solo las respuestas de tus invitados, en un panel web que tu equipo puede consultar en cualquier momento.</p>
+
+  <h2>Cómo funciona</h2>
+  <div class="steps">
+    <div class="box"><b>1. Carga tu lista</b>Crea el evento y sube a tus invitados desde un archivo de Excel (nombre y teléfono).</div>
+    <div class="box"><b>2. Envía por WhatsApp</b>Cada invitado recibe un mensaje con su enlace personal para confirmar.</div>
+    <div class="box"><b>3. Revisa las respuestas</b>Ve en tiempo real quién confirma, cuántos acompañantes lleva y sus notas.</div>
+  </div>
+
+  <h2>Lo que tu equipo obtiene</h2>
+  <div class="two">
+    <ul>
+      <li>Panel por evento con totales de confirmados, rechazados, pendientes y acompañantes.</li>
+      <li>Búsqueda de invitados por nombre o teléfono.</li>
+      <li>Edición de datos y reenvío del mensaje a un solo invitado.</li>
+      <li>Exportación de la lista a CSV.</li>
+    </ul>
+    <ul>
+      <li>Un usuario y contraseña por cada integrante del equipo.</li>
+      <li>Cada quien ve sus eventos y los que le compartan; el administrador ve todos.</li>
+      <li>Tus credenciales de WhatsApp se guardan cifradas.</li>
+      <li>El invitado confirma desde un enlace, sin registrarse ni instalar nada.</li>
+    </ul>
+  </div>
+
+  <h2>Qué necesitas de tu parte</h2>
+  <ul>
+    <li>Una cuenta de Twilio con un número de WhatsApp Business propio y una plantilla de mensaje aprobada por WhatsApp. Te acompañamos en la configuración.</li>
+    <li>Contar con el consentimiento de tus invitados para escribirles por WhatsApp.</li>
+    <li>El costo de los mensajes de WhatsApp lo cobra Twilio/Meta directamente a tu cuenta, aparte del servicio de AutoConfirm.</li>
+  </ul>
+
+  <h2>Inversión</h2>
+  <div class="price">
+    <p><b>[PRECIO: por evento / mensual / otro, defínelo antes de usar este documento]</b></p>
+    <p class="small">Incluye alta de tu empresa, usuarios de tu equipo y acompañamiento en la configuración inicial. [Ajusta según lo que realmente ofrezcas.]</p>
+  </div>
+
+  <div class="foot">
+    <b>[TU NOMBRE O NOMBRE LEGAL]</b> · [correo] · [teléfono / WhatsApp] · [sitio web]
+    <div class="small" style="margin-top:6px">Términos de servicio y aviso de privacidad disponibles en el sitio.</div>
+  </div>
+</div>
+</body>
+</html>
