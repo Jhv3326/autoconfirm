@@ -36,6 +36,39 @@ def build_twilio_payload(from_number: str, phone_e164: str, name: str, link: str
     return payload
 
 
+def enviar_mensaje_invitado(organizacion, invitado, confirmation_base_url: str) -> tuple[bool, str]:
+    """Manda un solo mensaje. Devuelve (ok, detalle). No hace commit por su cuenta."""
+    account_sid = organizacion.twilio_account_sid
+    auth_token = organizacion.twilio_auth_token
+    from_number = organizacion.twilio_whatsapp_from
+    content_sid = organizacion.twilio_content_sid
+
+    if not (account_sid and auth_token and from_number):
+        return False, "Faltan credenciales de Twilio para esta organización."
+
+    try:
+        telefono = normalize_phone_mx(invitado.telefono)
+    except ValueError as error:
+        return False, str(error)
+
+    link = f"{confirmation_base_url}?id={invitado.uuid}"
+    payload = build_twilio_payload(from_number, telefono, invitado.nombre or "Invitado", link, content_sid)
+    url = f"{TWILIO_API_BASE}/Accounts/{account_sid}/Messages.json"
+
+    try:
+        response = requests.post(url, data=payload, auth=(account_sid, auth_token), timeout=30)
+    except requests.RequestException as error:
+        return False, str(error)
+
+    if response.ok:
+        return True, "OK"
+    try:
+        detail = response.json().get("message", response.text)
+    except ValueError:
+        detail = response.text
+    return False, detail
+
+
 def enviar_invitaciones_evento(evento_id: int, confirmation_base_url: str) -> None:
     """Corre en un hilo de fondo: manda WhatsApp a los invitados pendientes de un evento."""
     session = Session()
@@ -45,16 +78,6 @@ def enviar_invitaciones_evento(evento_id: int, confirmation_base_url: str) -> No
             return
         organizacion = evento.organizacion
 
-        account_sid = organizacion.twilio_account_sid
-        auth_token = organizacion.twilio_auth_token
-        from_number = organizacion.twilio_whatsapp_from
-        content_sid = organizacion.twilio_content_sid
-
-        if not (account_sid and auth_token and from_number):
-            return
-
-        url = f"{TWILIO_API_BASE}/Accounts/{account_sid}/Messages.json"
-
         pendientes = (
             session.query(Invitado)
             .filter(Invitado.evento_id == evento_id, Invitado.mensaje_enviado != "Si")
@@ -62,21 +85,12 @@ def enviar_invitaciones_evento(evento_id: int, confirmation_base_url: str) -> No
         )
 
         for invitado in pendientes:
-            try:
-                telefono = normalize_phone_mx(invitado.telefono)
-                link = f"{confirmation_base_url}?id={invitado.uuid}"
-                payload = build_twilio_payload(
-                    from_number, telefono, invitado.nombre or "Invitado", link, content_sid
-                )
-                response = requests.post(url, data=payload, auth=(account_sid, auth_token), timeout=30)
-                if response.ok:
-                    invitado.mensaje_enviado = "Si"
-                    session.commit()
-                else:
-                    session.rollback()
-            except Exception:
+            ok, _ = enviar_mensaje_invitado(organizacion, invitado, confirmation_base_url)
+            if ok:
+                invitado.mensaje_enviado = "Si"
+                session.commit()
+            else:
                 session.rollback()
-            finally:
-                time.sleep(DELAY_SECONDS)
+            time.sleep(DELAY_SECONDS)
     finally:
         session.close()

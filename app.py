@@ -23,7 +23,7 @@ from flask_limiter.util import get_remote_address
 from markupsafe import escape
 
 from models import Evento, EventoColaborador, Invitado, Organizacion, Session, Usuario, init_db
-from twilio_sender import enviar_invitaciones_evento
+from twilio_sender import enviar_invitaciones_evento, enviar_mensaje_invitado
 
 load_dotenv()
 
@@ -468,8 +468,18 @@ def evento_detalle(evento_id):
     acompanantes = sum(int(i.acompanantes or 0) for i in invitados if i.confirmacion == "Confirmado")
     public_base = request.host_url.rstrip("/")
 
+    busqueda = request.args.get("q", "").strip()
+    if busqueda:
+        buscar = busqueda.lower()
+        invitados_mostrados = [
+            i for i in invitados
+            if buscar in (i.nombre or "").lower() or buscar in (i.telefono or "").lower()
+        ]
+    else:
+        invitados_mostrados = invitados
+
     rows = []
-    for item in invitados:
+    for item in invitados_mostrados:
         fecha = item.fecha_respuesta.strftime("%Y-%m-%d %H:%M") if item.fecha_respuesta else "—"
         enlace_relativo = f"/confirmar?id={item.uuid}"
         enlace_completo = f"{public_base}{enlace_relativo}"
@@ -488,11 +498,18 @@ def evento_detalle(evento_id):
                     <a href="{enlace_relativo}" target="_blank">Abrir enlace</a>
                     <div class="link-box">{enlace_completo}</div>
                 </td>
+                <td>
+                    <a href="{url_for('invitado_editar', evento_id=evento.id, invitado_id=item.id)}">Editar</a>
+                    <form method="post" action="{url_for('invitado_reenviar', evento_id=evento.id, invitado_id=item.id)}" style="display:inline;">
+                        <button class="btn btn-secondary" type="submit" style="padding:2px 8px;font-size:12px;">Reenviar</button>
+                    </form>
+                </td>
             </tr>
             """
         )
     if not rows:
-        rows.append('<tr><td colspan="8">Todavía no hay invitados cargados. Sube un Excel abajo.</td></tr>')
+        mensaje_vacio = "Ningún invitado coincide con la búsqueda." if busqueda else "Todavía no hay invitados cargados. Sube un Excel abajo."
+        rows.append(f'<tr><td colspan="9">{escape(mensaje_vacio)}</td></tr>')
 
     puede_administrar = evento.creado_por_id == g.usuario.id or g.usuario.es_admin
     colaboradores_html = ""
@@ -549,11 +566,14 @@ def evento_detalle(evento_id):
                 <a class="btn btn-secondary" href="{url_for('evento_exportar_csv', evento_id=evento.id)}">Exportar CSV</a>
             </div>
         </div>
+        <form method="get" style="margin-bottom:14px;">
+            <input type="text" name="q" placeholder="Buscar por nombre o teléfono…" value="{escape(busqueda)}">
+        </form>
         <table>
             <thead>
                 <tr>
                     <th>Nombre</th><th>Teléfono</th><th>Estado</th><th>Acomp.</th>
-                    <th>Enviado</th><th>Respondió</th><th>Notas</th><th>Enlace</th>
+                    <th>Enviado</th><th>Respondió</th><th>Notas</th><th>Enlace</th><th>Acciones</th>
                 </tr>
             </thead>
             <tbody>{''.join(rows)}</tbody>
@@ -682,6 +702,114 @@ def evento_enviar(evento_id):
     </div>
     """
     return render_page("Enviando invitaciones", content)
+
+
+def cargar_invitado_o_404(evento, invitado_id: int):
+    invitado = g.db.get(Invitado, invitado_id)
+    if not invitado or invitado.evento_id != evento.id:
+        return None
+    return invitado
+
+
+@app.route("/eventos/<int:evento_id>/invitados/<int:invitado_id>/editar", methods=["GET", "POST"])
+@login_required
+def invitado_editar(evento_id, invitado_id):
+    evento = cargar_evento_o_404(evento_id)
+    if not evento:
+        return render_page("No encontrado", f'{topbar()}<div class="card"><h1>Evento no encontrado</h1></div>'), 404
+    invitado = cargar_invitado_o_404(evento, invitado_id)
+    if not invitado:
+        return render_page("No encontrado", f'{topbar()}<div class="card"><h1>Invitado no encontrado</h1></div>'), 404
+
+    if request.method == "POST":
+        invitado.nombre = request.form.get("nombre", "").strip()
+        invitado.telefono = request.form.get("telefono", "").strip()
+        invitado.confirmacion = request.form.get("confirmacion", "Pendiente").strip()
+        try:
+            invitado.acompanantes = max(0, int(request.form.get("acompanantes", "0") or 0))
+        except ValueError:
+            invitado.acompanantes = 0
+        invitado.notas = request.form.get("notas", "").strip()
+        g.db.commit()
+        return redirect(url_for("evento_detalle", evento_id=evento.id))
+
+    opciones_estado = ["Pendiente", "Confirmado", "Rechazado"]
+    opciones_html = "".join(
+        f'<option value="{escape(opcion)}" {"selected" if invitado.confirmacion == opcion else ""}>{escape(opcion)}</option>'
+        for opcion in opciones_estado
+    )
+
+    content = f"""
+    {topbar()}
+    <div class="hero">
+        <div class="pill">{escape(evento.nombre)}</div>
+        <h1>Editar invitado</h1>
+    </div>
+    <div class="card">
+        <form method="post">
+            <div class="grid">
+                <div class="field">
+                    <label for="nombre">Nombre</label>
+                    <input type="text" name="nombre" id="nombre" value="{escape(invitado.nombre or '')}" required>
+                </div>
+                <div class="field">
+                    <label for="telefono">Teléfono</label>
+                    <input type="text" name="telefono" id="telefono" value="{escape(invitado.telefono or '')}">
+                </div>
+            </div>
+            <div class="grid">
+                <div class="field">
+                    <label for="confirmacion">Estado</label>
+                    <select name="confirmacion" id="confirmacion">{opciones_html}</select>
+                </div>
+                <div class="field">
+                    <label for="acompanantes">Acompañantes</label>
+                    <input type="number" name="acompanantes" id="acompanantes" value="{int(invitado.acompanantes or 0)}" min="0" max="20">
+                </div>
+            </div>
+            <div class="field">
+                <label for="notas">Notas</label>
+                <textarea name="notas" id="notas" rows="3">{escape(invitado.notas or '')}</textarea>
+            </div>
+            <div class="actions">
+                <button class="btn btn-primary" type="submit">Guardar</button>
+                <a class="btn btn-secondary" href="{url_for('evento_detalle', evento_id=evento.id)}">Cancelar</a>
+            </div>
+        </form>
+    </div>
+    """
+    return render_page("Editar invitado", content)
+
+
+@app.route("/eventos/<int:evento_id>/invitados/<int:invitado_id>/reenviar", methods=["POST"])
+@login_required
+def invitado_reenviar(evento_id, invitado_id):
+    evento = cargar_evento_o_404(evento_id)
+    if not evento:
+        return render_page("No encontrado", f'{topbar()}<div class="card"><h1>Evento no encontrado</h1></div>'), 404
+    invitado = cargar_invitado_o_404(evento, invitado_id)
+    if not invitado:
+        return render_page("No encontrado", f'{topbar()}<div class="card"><h1>Invitado no encontrado</h1></div>'), 404
+
+    confirmation_base_url = f"{request.host_url.rstrip('/')}/confirmar"
+    ok, detalle = enviar_mensaje_invitado(evento.organizacion, invitado, confirmation_base_url)
+    if ok:
+        invitado.mensaje_enviado = "Si"
+        g.db.commit()
+        mensaje = "Mensaje reenviado correctamente."
+    else:
+        mensaje = f"No se pudo reenviar: {detalle}"
+
+    content = f"""
+    {topbar()}
+    <div class="card hero">
+        <h1>{escape(mensaje)}</h1>
+        <div class="actions" style="justify-content:center;">
+            <a class="btn btn-primary" href="{url_for('evento_detalle', evento_id=evento.id)}">Volver al evento</a>
+        </div>
+    </div>
+    """
+    return render_page("Reenviar mensaje", content)
 
 
 @app.route("/eventos/<int:evento_id>/compartir", methods=["POST"])
