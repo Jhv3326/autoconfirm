@@ -1,3 +1,7 @@
+# OBSOLETO (2026-10-02): reemplazado por el dashboard web multi-tenant
+# (ver app.py y twilio_sender.py en la raíz del proyecto). El envío por
+# Twilio ya no vive en una app de escritorio; se conserva aquí solo como
+# referencia histórica.
 import json
 import os
 import re

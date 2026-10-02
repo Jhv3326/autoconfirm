@@ -1,35 +1,27 @@
 # AutoConfirm en Render
 
-## Archivos ya listos
-- `app.py`
-- `requirements.txt`
-- `render.yaml`
+## Recursos necesarios
+- Un **Web Service** (Python) apuntando a este repo.
+- Una base de datos **Postgres** (el plan gratis de Render se borra a los 90 días de inactividad — usar un plan de pago desde el inicio).
 
-## Qué harás tú
-1. Subir la carpeta/proyecto a GitHub.
-2. Crear cuenta en Render.
-3. En Render: **New +** → **Blueprint** o **Web Service**.
-4. Conectar tu repo.
-5. Si detecta `render.yaml`, aceptar la configuración.
-6. Esperar a que termine el deploy.
-7. Abrir la URL pública que te entregue Render.
-
-## Si lo haces como Web Service manual
-Usa estos valores:
-- **Environment:** Python
+## Build y start command
 - **Build Command:** `pip install -r requirements.txt`
 - **Start Command:** `gunicorn app:app`
 
-## Después del deploy
-Cuando Render te dé una URL como esta:
-- `https://autoconfirm-web.onrender.com`
+## Variables de entorno obligatorias
+- `DATABASE_URL` → connection string de la base Postgres (interna, si Web Service y base están en la misma región).
+- `SECRET_KEY` → firma las sesiones de login. Generar con:
+  `python -c "import secrets; print(secrets.token_hex(32))"`
+- `ENCRYPTION_KEY` → cifra las credenciales de Twilio guardadas por organización. Generar con:
+  `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+  (si se pierde o se cambia, las credenciales de Twilio ya guardadas quedan ilegibles).
 
-la URL base de confirmación será:
-- `https://autoconfirm-web.onrender.com/confirmar`
+Sin `SECRET_KEY` o `ENCRYPTION_KEY`, el servicio no arranca (falla rápido con un error claro en los logs).
 
-Esa URL la pondrás en `main_app_meta_test.py` en el campo:
-- **URL base confirmación**
+## Después del primer deploy
+1. Correr `crear_cliente.py` (localmente, apuntando `AUTOCONFIRM_DATABASE_URL` a la base de producción) para dar de alta la primera organización y su usuario.
+2. Iniciar sesión en `https://<tu-dominio>.onrender.com/login`.
+3. Cada organización configura sus propias credenciales de Twilio desde `/configuracion` dentro del dashboard — ya no se editan en ningún archivo.
 
-## Nota importante
-Ahorita la base usa SQLite. Para pruebas sirve bien.
-Si luego lo vendes en serio, convendrá migrar a una base más robusta.
+## Nota sobre el plan del Web Service
+Mientras no haya clientes reales pagando, el Web Service puede quedarse en el plan gratis (solo implica ~50s de espera tras inactividad, no hay riesgo de pérdida de datos). Subir a un plan pagado (Starter) cuando el tiempo de espera inicial empiece a afectar a un cliente real.

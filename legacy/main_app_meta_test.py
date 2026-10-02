@@ -1,3 +1,6 @@
+# OBSOLETO (2026-10-02): reemplazado por el dashboard web multi-tenant
+# (ver app.py en la raíz del proyecto). El envío de WhatsApp ya no vive en
+# una app de escritorio; se conserva aquí solo como referencia histórica.
 import os
 import re
 import threading
